@@ -12,18 +12,18 @@ no telemetry. This is a self-contained app that runs on its own without installi
 
 Three tabs:
 
-- **Record** — pick a process name (e.g. `acrobat.exe`), describe
+- **Record** - pick a process name (e.g. `acrobat.exe`), describe
   what you're about to do, click Start, perform the action on a working
   machine, click Stop. Save the resulting `.baseline.json` file.
-- **Compare** — on the broken machine, load the baseline, perform the same
+- **Compare** - on the broken machine, load the baseline, perform the same
   action, click Run Diff. The report panel lists every registry / file /
   network access that disagreed between the baseline and this run, ranked
   by severity, with the live state of the affected resource alongside it.
-- **Help** — built-in workflow and limitations primer.
+- **Help** - built-in workflow and limitations primer.
 
-The diagnosis is deterministic: same inputs, same output. The diff engine
+The diagnosis is deterministic. The diff engine
 is a small set of classification rules over (Kind, Target, Operation,
-Result) tuples — no AI inference, no heuristics that change between runs.
+Result) tuples. There is no AI inference or heuristics that change between runs.
 
 ## Why this exists
 
