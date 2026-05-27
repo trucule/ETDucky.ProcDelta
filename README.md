@@ -6,7 +6,7 @@ machine, run the same action on a broken machine, and get a deterministic
 report of every environmental difference that could explain why it failed.
 
 Source-available under [PolyForm Shield 1.0.0](LICENSE). No AI, no cloud,
-no telemetry, no agent.
+no telemetry. This is a self-contained app that runs on its own without installing anything locally.
 
 ## What it does
 
