@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <AssemblyName>ETDucky.ProcDelta</AssemblyName>
+    <RootNamespace>ETDucky.ProcDelta</RootNamespace>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Same TraceEvent version as ProviderExplorer / the agent so the
+         native shims stay binary-compatible if both tools are on a host. -->
+    <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.2.3" GeneratePathProperty="true" />
+
+    <!-- Note: Microsoft.Win32.Registry and System.Security.AccessControl are
+         part of the .NET 10 Windows runtime targeting pack — no explicit
+         PackageReferences needed. Adding them produces NU1510 warnings. -->
+  </ItemGroup>
+
+  <!-- Embed app.ico as a managed resource in addition to the PE
+       IDI_APPLICATION resource set by <ApplicationIcon>. The PE resource
+       drives the Explorer file icon; this embedded copy is what MainForm
+       loads at runtime to set Form.Icon (taskbar + title bar + Alt+Tab).
+       Required because Assembly.GetExecutingAssembly().Location returns
+       empty in single-file published builds, breaking ExtractAssociatedIcon. -->
+  <ItemGroup>
+    <EmbeddedResource Include="app.ico" />
+  </ItemGroup>
+
+  <!-- Note: this project does NOT reference ETDucky.Core. It is built to stand
+       alone in its own public MIT-licensed repo, with no agent-internal types
+       in its surface area. -->
+
+  <!-- TraceEvent native DLL copy — same mechanism as ProviderExplorer. -->
+  <Target Name="CopyTraceEventNativeDLLs" AfterTargets="Build">
+    <ItemGroup>
+      <TraceEventX64DLLs Include="$(PkgMicrosoft_Diagnostics_Tracing_TraceEvent)\build\native\amd64\*.dll"
+                         Condition="Exists('$(PkgMicrosoft_Diagnostics_Tracing_TraceEvent)\build\native\amd64')" />
+      <TraceEventX64DLLs Include="$(PkgMicrosoft_Diagnostics_Tracing_TraceEvent)\build\native\x64\*.dll"
+                         Condition="Exists('$(PkgMicrosoft_Diagnostics_Tracing_TraceEvent)\build\native\x64')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(TraceEventX64DLLs)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition="'@(TraceEventX64DLLs)' != ''" />
+  </Target>
+</Project>

@@ -1,0 +1,45 @@
+# Continuous integration build for every push and pull request.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build (Release, win-x64)
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore ETDucky.ProcDelta.csproj
+
+      - name: Build (Release)
+        run: dotnet build ETDucky.ProcDelta.csproj -c Release --no-restore
+
+      - name: Publish (single-file, self-contained) — smoke test
+        run: |
+          dotnet publish ETDucky.ProcDelta.csproj `
+            -c Release `
+            -r win-x64 `
+            -p:SelfContained=true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -o publish
+
+      - name: Confirm output binary exists
+        run: |
+          if (!(Test-Path publish\ETDucky.ProcDelta.exe)) {
+            Write-Error "Expected publish\ETDucky.ProcDelta.exe was not produced."
+            exit 1
+          }
+          Get-Item publish\ETDucky.ProcDelta.exe | Select-Object Length, LastWriteTime

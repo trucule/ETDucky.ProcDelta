@@ -1,0 +1,35 @@
+# Build output
+bin/
+obj/
+out/
+publish/
+
+# IDE
+.vs/
+.idea/
+*.user
+*.suo
+*.userprefs
+
+# NuGet
+*.nupkg
+packages/
+
+# JetBrains
+*.DotSettings.user
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Code-signing artifacts (never commit)
+*.pfx
+*.p12
+*.snk
+secrets.env
+
+# Local test captures and baselines
+*.etl
+*.etlx
+*.baseline.json
