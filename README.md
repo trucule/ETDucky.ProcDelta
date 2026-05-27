@@ -27,15 +27,10 @@ Result) tuples — no AI inference, no heuristics that change between runs.
 
 ## Why this exists
 
-Most application-crash investigation on Windows is interactive guesswork.
-Procmon traces are dense and noisy. Crash dumps tell you the symptom but
-not the environmental cause. Logs only contain what the app's authors
-thought to log.
-
 The ProcDelta captures the kernel's view of what the application
-actually tried to do — every registry value it queried, every file it
-opened, every host it tried to reach, with the success/failure status of
-each one — and surfaces only the entries that disagree with a known-good
+actually tried to do (registry values it queried, files it
+opened, hosts it tried to reach) with the success/failure status of
+each one and surfaces only the entries that disagree with a known-good
 baseline. That diff is usually short (a handful of entries even on a
 chatty app) and points directly at the environmental misalignment a
 sysadmin needs to fix.
