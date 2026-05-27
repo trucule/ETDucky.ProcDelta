@@ -12,7 +12,7 @@ no telemetry, no agent.
 
 Three tabs:
 
-- **Record** — pick a process name (e.g. `AdobeCollabSync.exe`), describe
+- **Record** — pick a process name (e.g. `acrobat.exe`), describe
   what you're about to do, click Start, perform the action on a working
   machine, click Stop. Save the resulting `.baseline.json` file.
 - **Compare** — on the broken machine, load the baseline, perform the same
