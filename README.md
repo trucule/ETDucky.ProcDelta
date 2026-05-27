@@ -5,7 +5,8 @@ application failures. Record a known-good run of an app on a working
 machine, run the same action on a broken machine, and get a deterministic
 report of every environmental difference that could explain why it failed.
 
-MIT-licensed. No AI, no cloud, no telemetry, no agent.
+Source-available under [PolyForm Shield 1.0.0](LICENSE). No AI, no cloud,
+no telemetry, no agent.
 
 ## What it does
 
@@ -218,7 +219,14 @@ The two are independent repositories.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+[PolyForm Shield License 1.0.0](LICENSE). Source-available, free for any
+use **except** building a product or service that competes with ET Ducky
+LLC. The license text is short and plain-English — read it before forking
+for commercial use.
+
+Contributions submitted as pull requests are accepted under the same
+license. By submitting a PR you confirm you have the right to license
+your contribution this way.
 
 ## Contributing
 
