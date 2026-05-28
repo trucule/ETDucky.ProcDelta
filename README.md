@@ -5,25 +5,26 @@ application failures. Record a known-good run of an app on a working
 machine, run the same action on a broken machine, and get a deterministic
 report of every environmental difference that could explain why it failed.
 
-Source-available under [PolyForm Shield 1.0.0](LICENSE). No AI, no cloud,
-no telemetry. This is a self-contained app that runs on its own without installing anything locally.
+Open-source under the [Apache License 2.0](LICENSE). No AI, no cloud,
+no telemetry. This is a self-contained app that runs on its own without
+installing anything locally.
 
 ## What it does
 
 Three tabs:
 
-- **Record** - pick a process name (e.g. `acrobat.exe`), describe
+- **Record** — pick a process name (e.g. `acrobat.exe`), describe
   what you're about to do, click Start, perform the action on a working
   machine, click Stop. Save the resulting `.baseline.json` file.
-- **Compare** - on the broken machine, load the baseline, perform the same
+- **Compare** — on the broken machine, load the baseline, perform the same
   action, click Run Diff. The report panel lists every registry / file /
   network access that disagreed between the baseline and this run, ranked
   by severity, with the live state of the affected resource alongside it.
-- **Help** - built-in workflow and limitations primer.
+- **Help** — built-in workflow and limitations primer.
 
-The diagnosis is deterministic. The diff engine
-is a small set of classification rules over (Kind, Target, Operation,
-Result) tuples. There is no AI inference or heuristics that change between runs.
+The diagnosis is deterministic. The diff engine is a small set of
+classification rules over (Kind, Target, Operation, Result) tuples.
+There is no AI inference or heuristics that change between runs.
 
 ## Why this exists
 
@@ -214,10 +215,9 @@ The two are independent repositories.
 
 ## License
 
-[PolyForm Shield License 1.0.0](LICENSE). Source-available, free for any
-use **except** building a product or service that competes with ET Ducky
-LLC. The license text is short and plain-English — read it before forking
-for commercial use.
+[Apache License 2.0](LICENSE). Free for any use — commercial or otherwise
+— with patent grant and trademark protection. See LICENSE for the full
+terms.
 
 Contributions submitted as pull requests are accepted under the same
 license. By submitting a PR you confirm you have the right to license
