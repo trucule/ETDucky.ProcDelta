@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace ETDucky.ProcDelta.Services;
 
@@ -15,26 +16,45 @@ namespace ETDucky.ProcDelta.Services;
 /// is followed automatically). A PID leaves the set when the process exits.
 ///
 /// The capture loop calls <see cref="OnProcessStart"/> for every kernel
-/// ProcessStart event and <see cref="OnProcessStop"/> for every Stop, and
-/// queries <see cref="IsTracked"/> to decide whether to record subsequent
+/// ProcessStart AND ProcessDCStart (rundown) event, and
+/// <see cref="OnProcessStop"/> for every Stop, and queries
+/// <see cref="IsTracked"/> to decide whether to record subsequent
 /// registry / file / network accesses by that PID.
+///
+/// The tracker also remembers every (pid → parent, name) it has seen —
+/// tracked or not — so that when a parent joins the set later (e.g. a
+/// rundown event arrives after its child's), the whole known descendant
+/// tree cascades in. This closes the pre-existing gap where children of
+/// an already-running matched process were silently untracked because
+/// rundown events were never consumed.
+///
+/// Patterns support '*' and '?' wildcards ("Acro*") in addition to exact
+/// names; names without wildcards get ".exe" appended when missing.
 ///
 /// Thread-safe: callbacks come in from the ETW reader thread; the UI
 /// thread may query <see cref="TrackedCount"/> for status.
 /// </summary>
 public sealed class ProcessTracker
 {
-    private readonly HashSet<string> _patternImageNames;
+    private readonly HashSet<string> _exactNames;
+    private readonly List<Regex> _wildcardPatterns;
     private readonly ConcurrentDictionary<int, TrackedProcess> _tracked = new();
 
     /// <summary>
+    /// Every process seen this session (from seeding, rundown, or live
+    /// starts), tracked or not, so late-joining parents can cascade to
+    /// already-seen children.
+    /// </summary>
+    private readonly ConcurrentDictionary<int, (int ParentPid, string ImageName)> _seen = new();
+
+    /// <summary>
     /// Pipe-separated list of image file names (basenames, with or without
-    /// ".exe"). Case-insensitive. Example: "AcroCEF.exe|AdobeCollabSync.exe"
-    /// or just "outlook" for a single app.
+    /// ".exe"; '*'/'?' wildcards allowed). Case-insensitive.
+    /// Example: "AcroCEF.exe|AdobeCollabSync.exe" or "Acro*".
     /// </summary>
     public ProcessTracker(string processPattern)
     {
-        _patternImageNames = ParsePattern(processPattern);
+        (_exactNames, _wildcardPatterns) = ParsePattern(processPattern);
         SeedFromRunningProcesses();
     }
 
@@ -60,8 +80,9 @@ public sealed class ProcessTracker
         => _tracked.TryGetValue(pid, out var p) ? p.ImageName : string.Empty;
 
     /// <summary>
-    /// Register a new process. Joins the tracked set if its image matches
-    /// the pattern or its parent is already tracked.
+    /// Register a process (live start or rundown). Joins the tracked set if
+    /// its image matches the pattern or its parent is already tracked; when
+    /// it joins, any already-seen descendants cascade in with it.
     /// </summary>
     public void OnProcessStart(int pid, int parentPid, string imagePath)
     {
@@ -69,23 +90,59 @@ public sealed class ProcessTracker
         var basename = Path.GetFileName(imagePath ?? string.Empty);
         if (string.IsNullOrEmpty(basename)) return;
 
-        var matchedByName = _patternImageNames.Contains(basename);
+        _seen[pid] = (parentPid, basename);
+
+        if (_tracked.ContainsKey(pid)) return;
+
+        var matchedByName = MatchesPattern(basename);
         var matchedByParent = parentPid > 0 && _tracked.ContainsKey(parentPid);
         if (!matchedByName && !matchedByParent) return;
 
         _tracked[pid] = new TrackedProcess(pid, parentPid, basename, DateTime.UtcNow, matchedByName);
+        CascadeKnownChildren(pid);
     }
 
     /// <summary>Remove a PID from the tracked set on process exit.</summary>
     public void OnProcessStop(int pid)
-        => _tracked.TryRemove(pid, out _);
+    {
+        _tracked.TryRemove(pid, out _);
+        _seen.TryRemove(pid, out _);
+    }
+
+    private bool MatchesPattern(string basename)
+    {
+        if (_exactNames.Contains(basename)) return true;
+        foreach (var rx in _wildcardPatterns)
+        {
+            if (rx.IsMatch(basename)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// After <paramref name="parentPid"/> joins the tracked set, pull in
+    /// every already-seen process whose ancestry chains to it. Handles
+    /// rundown events arriving in arbitrary order (child before parent).
+    /// </summary>
+    private void CascadeKnownChildren(int parentPid)
+    {
+        foreach (var kv in _seen)
+        {
+            if (kv.Value.ParentPid == parentPid && !_tracked.ContainsKey(kv.Key))
+            {
+                _tracked[kv.Key] = new TrackedProcess(kv.Key, parentPid, kv.Value.ImageName, DateTime.UtcNow, false);
+                CascadeKnownChildren(kv.Key);
+            }
+        }
+    }
 
     /// <summary>
     /// Seed the tracker with already-running processes that match the
-    /// pattern at construction time. The TraceEvent kernel session's
-    /// rundown events would surface running processes too, but seeding
-    /// here means the first accesses by an already-running matched
-    /// process aren't dropped while we wait for rundown.
+    /// pattern at construction time, so the first accesses by an already-
+    /// running matched process aren't dropped while we wait for the kernel
+    /// session's rundown (DCStart) events. Children of those processes are
+    /// filled in by the DCStart events (which the capture now consumes)
+    /// via the cascade above.
     /// </summary>
     private void SeedFromRunningProcesses()
     {
@@ -93,47 +150,49 @@ public sealed class ProcessTracker
         try { all = Process.GetProcesses(); }
         catch { return; }
 
-        try
+        foreach (var p in all)
         {
-            foreach (var p in all)
+            try
             {
-                try
+                var basename = p.ProcessName + ".exe";
+                _seen[p.Id] = (0, basename);
+                if (MatchesPattern(basename))
                 {
-                    var basename = p.ProcessName + ".exe";
-                    if (_patternImageNames.Contains(basename))
-                    {
-                        _tracked[p.Id] = new TrackedProcess(p.Id, 0, basename, DateTime.UtcNow, true);
-                    }
+                    _tracked[p.Id] = new TrackedProcess(p.Id, 0, basename, DateTime.UtcNow, true);
                 }
-                catch { /* access to a particular process can be denied; skip */ }
-                finally { try { p.Dispose(); } catch { } }
             }
+            catch { /* access to a particular process can be denied; skip */ }
+            finally { try { p.Dispose(); } catch { } }
         }
-        finally
-        {
-            // Process[] from GetProcesses doesn't own the disposable
-            // collection itself; individual Dispose() inside the loop is
-            // sufficient.
-        }
-
-        // Second pass: add children whose parent is now in the tracked set.
-        // Approximation — full process-tree reconstruction at seed time
-        // would require WMI or a TH32CS_SNAPPROCESS walk. The rundown
-        // events from EnableKernelProvider fill in any gaps.
     }
 
-    private static HashSet<string> ParsePattern(string pattern)
+    private static (HashSet<string> Exact, List<Regex> Wildcards) ParsePattern(string pattern)
     {
-        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (string.IsNullOrWhiteSpace(pattern)) return set;
+        var exact = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var wildcards = new List<Regex>();
+        if (string.IsNullOrWhiteSpace(pattern)) return (exact, wildcards);
+
         foreach (var raw in pattern.Split('|', StringSplitOptions.RemoveEmptyEntries))
         {
             var name = raw.Trim();
             if (name.Length == 0) continue;
-            if (!name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) name += ".exe";
-            set.Add(name);
+
+            if (name.IndexOf('*') >= 0 || name.IndexOf('?') >= 0)
+            {
+                // Wildcard entry → anchored, case-insensitive regex.
+                // "Acro*" matches "Acrobat.exe" without needing ".exe"
+                // appended (the trailing * covers it).
+                var rx = "^" + Regex.Escape(name).Replace(@"\*", ".*").Replace(@"\?", ".") + "$";
+                try { wildcards.Add(new Regex(rx, RegexOptions.IgnoreCase | RegexOptions.Compiled)); }
+                catch { /* unparseable pattern segment — skip */ }
+            }
+            else
+            {
+                if (!name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) name += ".exe";
+                exact.Add(name);
+            }
         }
-        return set;
+        return (exact, wildcards);
     }
 
     private sealed record TrackedProcess(

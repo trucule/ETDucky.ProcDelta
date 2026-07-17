@@ -33,6 +33,18 @@ public static class LiveStateInspector
     {
         try
         {
+            // Synthetic / non-filesystem target namespaces first — probing
+            // these as paths or sockets produces misleading "not found"
+            // sentences.
+            if (target.StartsWith("service:", StringComparison.OrdinalIgnoreCase))
+                return "(service lifecycle event — verify the service's state and start type in services.msc)";
+            if (target.StartsWith("clr:", StringComparison.OrdinalIgnoreCase))
+                return "(managed-runtime event — no on-disk artifact to probe)";
+            if (target.StartsWith("cert:", StringComparison.OrdinalIgnoreCase))
+                return "(certificate validation event — inspect the machine/user certificate stores manually)";
+            if (target.StartsWith("tcp-connect-failure", StringComparison.OrdinalIgnoreCase))
+                return "(aggregate TCP-failure signal — see the network candidates above for specific hosts)";
+
             return kind switch
             {
                 AccessKind.Registry => InspectRegistry(target, detail),
@@ -52,6 +64,11 @@ public static class LiveStateInspector
 
     private static string InspectRegistry(string fullKeyPath, string valueName)
     {
+        // A key that still carries an unresolvable token (another user's
+        // SID) can't be opened literally on this machine.
+        if (PathNormalizer.ContainsToken(fullKeyPath))
+            return $"(key is under another user's hive — inspect manually: {fullKeyPath})";
+
         var (root, subPath) = SplitRegistryPath(fullKeyPath);
         if (root is null) return $"Cannot parse registry root from '{fullKeyPath}'.";
 
@@ -94,9 +111,9 @@ public static class LiveStateInspector
     {
         if (string.IsNullOrEmpty(fullPath)) return (null, "");
 
-        // ETW kernel registry events emit native object-manager paths
-        // (\REGISTRY\MACHINE\... and \REGISTRY\USER\...). Convert to the
-        // Win32 hive names the .NET RegistryKey API understands.
+        // Current captures normalize registry paths at record time
+        // (PathNormalizer.NormalizeRegistry), but keep the native-path
+        // translation for legacy baselines that carry \REGISTRY\… paths.
         var p = fullPath.Replace("\\REGISTRY\\MACHINE", "HKEY_LOCAL_MACHINE", StringComparison.OrdinalIgnoreCase)
                         .Replace("\\REGISTRY\\USER",    "HKEY_USERS",         StringComparison.OrdinalIgnoreCase);
 
@@ -137,6 +154,9 @@ public static class LiveStateInspector
     {
         if (string.IsNullOrEmpty(expandedPath))
             return "Path empty after expansion.";
+
+        if (PathNormalizer.ContainsToken(expandedPath))
+            return $"(path is relative to another user's profile — inspect manually: {expandedPath})";
 
         if (File.Exists(expandedPath))
         {
@@ -200,22 +220,41 @@ public static class LiveStateInspector
 
     // ── Network ──────────────────────────────────────────────────────────
 
-    private static string InspectNetwork(string hostPort)
+    private static string InspectNetwork(string target)
     {
-        // Target shape is "host:port" or "ip:port".
-        var split = hostPort.LastIndexOf(':');
-        if (split <= 0) return $"Cannot parse host:port from '{hostPort}'.";
+        string host;
+        int port;
 
-        var host = hostPort.Substring(0, split);
-        if (!int.TryParse(hostPort.Substring(split + 1), out var port))
-            return $"Cannot parse port from '{hostPort}'.";
+        // WinINet events carry URLs; kernel connect events carry
+        // "ip:port". Handle both shapes.
+        if (target.Contains("://", StringComparison.Ordinal))
+        {
+            if (!Uri.TryCreate(target, UriKind.Absolute, out var uri) || string.IsNullOrEmpty(uri.Host))
+                return $"Cannot parse URL '{Truncate(target, 80)}'.";
+            host = uri.Host;
+            port = uri.Port; // scheme default when unspecified
+        }
+        else
+        {
+            var split = target.LastIndexOf(':');
+            if (split <= 0) return $"Cannot parse host:port from '{Truncate(target, 80)}'.";
+            host = target.Substring(0, split);
+            if (!int.TryParse(target.Substring(split + 1), out port))
+                return $"Cannot parse port from '{Truncate(target, 80)}'.";
+        }
 
         try
         {
             using var client = new TcpClient();
             var connectTask = client.ConnectAsync(host, port);
             if (!connectTask.Wait(TimeSpan.FromSeconds(3)))
+            {
+                // Observe the abandoned task's eventual fault so it can't
+                // surface as an UnobservedTaskException.
+                _ = connectTask.ContinueWith(t => _ = t.Exception,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
                 return $"TCP probe to {host}:{port} timed out after 3s.";
+            }
             return $"TCP probe to {host}:{port} succeeded.";
         }
         catch (Exception ex)
@@ -228,6 +267,9 @@ public static class LiveStateInspector
 
     private static string InspectProcessImage(string imagePath)
     {
+        if (PathNormalizer.ContainsToken(imagePath))
+            return $"(image path is relative to another user's profile — inspect manually: {imagePath})";
+
         if (File.Exists(imagePath))
         {
             var fi = new FileInfo(imagePath);

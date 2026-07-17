@@ -36,11 +36,23 @@ public sealed class MainForm : Form
 
     private readonly TabControl _tabs;
 
-    // Active capture state (shared between Record + Compare tabs).
+    /// <summary>Which mode owns the currently-running capture (if any).</summary>
+    private enum CaptureMode { None, Record, Compare }
+
+    // Active capture state. Only ONE capture can run at a time — the
+    // kernel session, app session, tracker and active session all belong
+    // to whichever mode started it (_mode). Each mode additionally keeps
+    // its OWN completed-session reference (_recSession / _cmpSession), so
+    // saving a recorded baseline can never pick up a later compare run's
+    // data (and vice versa).
+    private CaptureMode _mode = CaptureMode.None;
     private ProcessTracker? _tracker;
     private EnvironmentalCapture? _capture;
     private AppRuntimeCapture?    _appCapture;
-    private CaptureSession? _session;
+    private CaptureSession? _session;       // the session of the running (or last) capture
+    private CaptureSession? _recSession;    // last Record-mode session
+    private CaptureSession? _cmpSession;    // last Compare-mode session
+    private RegistryValueCache? _recValues; // registry hashes belonging to _recSession
     private System.Windows.Forms.Timer? _statusTimer;
 
     public MainForm()
@@ -52,6 +64,11 @@ public sealed class MainForm : Form
         BackColor     = BgPage;
         ForeColor     = TextPrimary;
         Font          = new Font("Segoe UI", 9f);
+
+        // Reclaim kernel-session slots stranded by a previous crashed run
+        // (sessions survive process death; names are randomised per start,
+        // so only a prefix sweep can find them).
+        try { EnvironmentalCapture.CleanupOrphanedSessions(); } catch { }
 
         // Load the multi-resolution app.ico from the assembly's embedded
         // resources and assign to Form.Icon — this drives the title bar,
@@ -133,7 +150,7 @@ public sealed class MainForm : Form
         for (var i = 0; i < 5; i++) ctrl.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
 
         ctrl.Controls.Add(NewMutedLabel("Process pattern:"), 0, 0);
-        _recPattern = NewTextBox("e.g. AdobeCollabSync.exe  (use | for multiple)");
+        _recPattern = NewTextBox("e.g. AdobeCollabSync.exe  (| for multiple, * and ? wildcards ok)");
         ctrl.Controls.Add(_recPattern, 1, 0);
 
         _recStartBtn = NewButton("● Start", primary: true);
@@ -219,6 +236,13 @@ public sealed class MainForm : Form
     {
         if (_recPattern is null || _recAppName is null || _recDescription is null) return;
 
+        if (_mode != CaptureMode.None)
+        {
+            MessageBox.Show(this, "A capture is already running. Stop it before starting another.",
+                "ProcDelta", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
         var pattern = _recPattern.Text.Trim();
         if (string.IsNullOrEmpty(pattern))
         {
@@ -227,15 +251,32 @@ public sealed class MainForm : Form
             return;
         }
 
+        if (!StartCapture(pattern, _recDescription.Text.Trim(), CaptureMode.Record)) return;
+
+        _recSession = _session;
+        _recValues  = _capture?.RegistryValues;
+
+        SetRecordControlsRunning(true);
+        StartStatusTimer();
+        await Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Shared capture bring-up for both modes. Returns false (after showing
+    /// the appropriate error dialog) when the capture could not start.
+    /// </summary>
+    private bool StartCapture(string pattern, string actionDescription, CaptureMode mode)
+    {
         try
         {
             _tracker = new ProcessTracker(pattern);
             _session = new CaptureSession
             {
                 ProcessPattern    = pattern,
-                ActionDescription = _recDescription.Text.Trim(),
+                ActionDescription = actionDescription,
             };
             _capture = new EnvironmentalCapture(_tracker, _session);
+            _capture.Faulted += OnKernelCaptureFaulted;
             _capture.Start();
 
             // App-runtime capture is best-effort. If it fails to start
@@ -244,6 +285,7 @@ public sealed class MainForm : Form
             try
             {
                 _appCapture = new AppRuntimeCapture(_tracker, _session);
+                _appCapture.Faulted += OnAppCaptureFaulted;
                 _appCapture.Start();
             }
             catch { _appCapture = null; }
@@ -253,7 +295,7 @@ public sealed class MainForm : Form
             MessageBox.Show(this,
                 "Access denied. The ProcDelta must run as Administrator.",
                 "ProcDelta", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
+            return false;
         }
         catch (InvalidOperationException ex)
         {
@@ -263,23 +305,72 @@ public sealed class MainForm : Form
                 "but the host limit is 8 concurrent kernel sessions. Stop one or more other ETW capture " +
                 "tools and try again.",
                 "ProcDelta", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
+            return false;
         }
         catch (Exception ex)
         {
             MessageBox.Show(this, $"Capture failed to start: {ex.GetType().Name}: {ex.Message}",
                 "ProcDelta", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
+            return false;
         }
 
-        SetRecordControlsRunning(true);
-        StartStatusTimer();
-        await Task.CompletedTask;
+        _mode = mode;
+        return true;
+    }
+
+    /// <summary>
+    /// The kernel pump died while a capture was supposed to be running.
+    /// Raised from a background thread — marshal to the UI, tell the
+    /// operator, and shut the capture down instead of letting the status
+    /// line tick "Running…" over a dead session forever.
+    /// </summary>
+    private void OnKernelCaptureFaulted(string message)
+    {
+        if (IsDisposed) return;
+        try
+        {
+            BeginInvoke(async () =>
+            {
+                var label = _mode == CaptureMode.Compare ? _cmpStatus : _recStatus;
+                await StopCaptureAsync();
+                if (label != null)
+                {
+                    label.ForeColor = Danger;
+                    label.Text = "CAPTURE STOPPED — " + message;
+                }
+            });
+        }
+        catch { /* form tearing down */ }
+    }
+
+    /// <summary>
+    /// The app-runtime pump died. Kernel capture continues (this surface
+    /// is best-effort), but the operator should know it went dark.
+    /// </summary>
+    private void OnAppCaptureFaulted(string message)
+    {
+        if (IsDisposed) return;
+        try
+        {
+            BeginInvoke(() =>
+            {
+                var label = _mode == CaptureMode.Compare ? _cmpStatus : _recStatus;
+                if (label != null)
+                {
+                    label.ForeColor = Warning;
+                    label.Text = "App-runtime capture stopped (kernel capture continues) — " + message;
+                }
+            });
+        }
+        catch { /* form tearing down */ }
     }
 
     private async Task StopCaptureAsync()
     {
-        if (_capture is null) return;
+        if (_capture is null || _mode == CaptureMode.None) return;
+        var stoppedMode = _mode;
+        _mode = CaptureMode.None;
+
         try { await _capture.StopAsync(); }    catch { }
         try { if (_appCapture is not null) await _appCapture.StopAsync(); } catch { }
         _appCapture = null;
@@ -288,11 +379,24 @@ public sealed class MainForm : Form
         SetCompareControlsRunning(false);
         UpdateStatusLabels();
 
-        // After Record-mode stop, enable Save. After Compare-mode stop,
-        // enable Run Diff. We can tell which mode we're in by which tab
-        // is active.
-        if (_tabs.SelectedIndex == 0 && _recSaveBtn != null) _recSaveBtn.Enabled = true;
-        if (_tabs.SelectedIndex == 1 && _cmpDiffBtn != null) _cmpDiffBtn.Enabled = true;
+        // Enable the follow-up action for the mode that OWNED the capture
+        // (not whichever tab happens to be selected).
+        if (stoppedMode == CaptureMode.Record  && _recSaveBtn != null) _recSaveBtn.Enabled = true;
+        if (stoppedMode == CaptureMode.Compare && _cmpDiffBtn != null) _cmpDiffBtn.Enabled = true;
+
+        // Surface dropped events — a lossy capture means an incomplete
+        // baseline / comparison and the operator should know.
+        var lost = _capture.EventsLost;
+        if (lost > 0)
+        {
+            var label = stoppedMode == CaptureMode.Compare ? _cmpStatus : _recStatus;
+            if (label != null)
+            {
+                label.ForeColor = Warning;
+                label.Text = $"Capture stopped, but {lost:N0} event(s) were dropped by ETW (buffers full). " +
+                             "The capture may be incomplete — consider re-recording.";
+            }
+        }
     }
 
     private void SetRecordControlsRunning(bool running)
@@ -302,12 +406,14 @@ public sealed class MainForm : Form
         if (_recPattern  != null) _recPattern.Enabled  = !running;
         if (_recAppName  != null) _recAppName.Enabled  = !running;
         if (_recSaveBtn  != null) _recSaveBtn.Enabled  = false;
+        // Only one capture may run at a time — lock out the other tab's Start.
+        if (_cmpStartBtn != null) _cmpStartBtn.Enabled = !running && _loadedBaseline != null;
     }
 
     private void SaveBaseline()
     {
-        if (_session is null || _recPattern is null || _recAppName is null || _recDescription is null) return;
-        if (_session.Accesses.Count == 0)
+        if (_recSession is null || _recPattern is null || _recAppName is null || _recDescription is null) return;
+        if (_recSession.TotalEventCount == 0)
         {
             MessageBox.Show(this, "Nothing was captured — no matching processes ran during the recording window.",
                 "ProcDelta", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -315,11 +421,11 @@ public sealed class MainForm : Form
         }
 
         var baseline = BaselineRecorder.Build(
-            _session,
+            _recSession,
             _recAppName.Text.Trim(),
             _recPattern.Text.Trim(),
             _recDescription.Text.Trim(),
-            _capture?.RegistryValues);
+            _recValues);
 
         using var dlg = new SaveFileDialog
         {
@@ -438,7 +544,7 @@ public sealed class MainForm : Form
 
         _cmpDiffBtn = NewButton("Δ Run diff");
         _cmpDiffBtn.Enabled = false;
-        _cmpDiffBtn.Click += (_, _) => RunDiff();
+        _cmpDiffBtn.Click += async (_, _) => await RunDiffAsync();
         ctrl.SetColumnSpan(_cmpDiffBtn, 2);
         ctrl.Controls.Add(_cmpDiffBtn, 0, 4);
 
@@ -516,12 +622,20 @@ public sealed class MainForm : Form
         _cmpBaselineSummary.Text =
             $"{loaded.AppName}  ·  recorded {loaded.RecordedAtUtc:yyyy-MM-dd} on {loaded.RecordedOn} by {loaded.RecordedBy}  ·  " +
             $"{loaded.Entries.Count:N0} aggregated accesses  ·  action: \"{loaded.ActionDescription}\"";
-        _cmpStartBtn.Enabled = true;
+        _cmpStartBtn.Enabled = _mode == CaptureMode.None;
     }
 
     private async Task StartCompareCaptureAsync()
     {
         if (_cmpPattern is null || _loadedBaseline is null) return;
+
+        if (_mode != CaptureMode.None)
+        {
+            MessageBox.Show(this, "A capture is already running. Stop it before starting another.",
+                "ProcDelta", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
         var pattern = _cmpPattern.Text.Trim();
         if (string.IsNullOrEmpty(pattern))
         {
@@ -530,38 +644,9 @@ public sealed class MainForm : Form
             return;
         }
 
-        try
-        {
-            _tracker = new ProcessTracker(pattern);
-            _session = new CaptureSession
-            {
-                ProcessPattern    = pattern,
-                ActionDescription = _loadedBaseline.ActionDescription,
-            };
-            _capture = new EnvironmentalCapture(_tracker, _session);
-            _capture.Start();
+        if (!StartCapture(pattern, _loadedBaseline.ActionDescription, CaptureMode.Compare)) return;
 
-            // App-runtime capture is best-effort (same rationale as the
-            // Record tab path above).
-            try
-            {
-                _appCapture = new AppRuntimeCapture(_tracker, _session);
-                _appCapture.Start();
-            }
-            catch { _appCapture = null; }
-        }
-        catch (UnauthorizedAccessException)
-        {
-            MessageBox.Show(this, "Access denied. Run as Administrator.", "ProcDelta",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, $"Capture failed: {ex.GetType().Name}: {ex.Message}",
-                "ProcDelta", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
+        _cmpSession = _session;
 
         SetCompareControlsRunning(true);
         StartStatusTimer();
@@ -574,16 +659,46 @@ public sealed class MainForm : Form
         if (_cmpStopBtn    != null) _cmpStopBtn.Enabled    = running;
         if (_cmpDiffBtn    != null) _cmpDiffBtn.Enabled    = false;
         if (_cmpExportBtn  != null) _cmpExportBtn.Enabled  = false;
+        // Only one capture may run at a time — lock out the other tab's Start.
+        if (_recStartBtn   != null) _recStartBtn.Enabled   = !running;
     }
 
-    private void RunDiff()
+    private async Task RunDiffAsync()
     {
-        if (_loadedBaseline is null || _session is null || _cmpReport is null || _cmpBaselinePath is null) return;
+        if (_loadedBaseline is null || _cmpSession is null || _cmpReport is null || _cmpBaselinePath is null) return;
 
-        _lastReport = DiffEngine.Compare(_loadedBaseline, _session, _cmpBaselinePath.Text);
-        var markdown = DiffEngine.RenderMarkdown(_lastReport);
-        _cmpReport.Text = markdown;
+        // The diff re-reads registry values, walks ACLs and TCP-probes
+        // unreachable hosts (3s timeout each) — run it off the UI thread
+        // so the window never freezes, even on candidate-heavy reports.
+        var baseline     = _loadedBaseline;
+        var session      = _cmpSession;
+        var baselinePath = _cmpBaselinePath.Text;
 
+        if (_cmpDiffBtn != null) _cmpDiffBtn.Enabled = false;
+        if (_cmpStatus  != null)
+        {
+            _cmpStatus.ForeColor = TextMuted;
+            _cmpStatus.Text = "Running diff (probing live state)…";
+        }
+
+        try
+        {
+            _lastReport = await Task.Run(() => DiffEngine.Compare(baseline, session, baselinePath));
+        }
+        catch (Exception ex)
+        {
+            if (_cmpStatus != null)
+            {
+                _cmpStatus.ForeColor = Danger;
+                _cmpStatus.Text = $"Diff failed: {ex.GetType().Name}: {ex.Message}";
+            }
+            if (_cmpDiffBtn != null) _cmpDiffBtn.Enabled = true;
+            return;
+        }
+
+        _cmpReport.Text = DiffEngine.RenderPlainText(_lastReport);
+
+        if (_cmpDiffBtn   != null) _cmpDiffBtn.Enabled   = true;
         if (_cmpExportBtn != null) _cmpExportBtn.Enabled = true;
         if (_cmpStatus    != null)
         {
@@ -607,7 +722,10 @@ public sealed class MainForm : Form
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
         try
         {
-            File.WriteAllText(dlg.FileName, DiffEngine.RenderMarkdown(_lastReport));
+            var markdown = dlg.FileName.EndsWith(".txt", StringComparison.OrdinalIgnoreCase)
+                ? DiffEngine.RenderPlainText(_lastReport)
+                : DiffEngine.RenderMarkdown(_lastReport);
+            File.WriteAllText(dlg.FileName, markdown);
         }
         catch (Exception ex)
         {
@@ -649,6 +767,7 @@ public sealed class MainForm : Form
         sb.AppendLine("---------------------------------------");
         sb.AppendLine("Type the executable name to watch (e.g. AdobeCollabSync.exe). Use the");
         sb.AppendLine("pipe character to watch several names at once: Acrobat.exe|AcroCEF.exe.");
+        sb.AppendLine("Wildcards work too: Acro* matches Acrobat.exe and AcroCEF.exe.");
         sb.AppendLine();
         sb.AppendLine("Add a short description of what you're about to do. Click Start. Perform");
         sb.AppendLine("the action exactly as a user would (launch the app, sign in, open a doc).");
@@ -656,8 +775,9 @@ public sealed class MainForm : Form
         sb.AppendLine("access made by the tracked process tree, with the success/failure status");
         sb.AppendLine("of each one. Click Save baseline and pick a filename.");
         sb.AppendLine();
-        sb.AppendLine("The baseline JSON is portable: it normalises user-profile paths and the");
-        sb.AppendLine("machine name to tokens (<USER>, <APPDATA>, etc.) so it works on any host.");
+        sb.AppendLine("The baseline JSON is portable: it normalises user-profile paths, user-hive");
+        sb.AppendLine("registry keys (SIDs), and the machine name to tokens (<USER>, <APPDATA>,");
+        sb.AppendLine("HKEY_CURRENT_USER, etc.) so it works on any host.");
         sb.AppendLine();
         sb.AppendLine();
         sb.AppendLine("Step 2 — Compare (on the broken machine)");
@@ -671,7 +791,8 @@ public sealed class MainForm : Form
         sb.AppendLine("Severities:");
         sb.AppendLine();
         sb.AppendLine("  HIGH    Regression — baseline succeeded, this run failed. Causal candidate.");
-        sb.AppendLine("  MEDIUM  Missing dependency or value drift between baseline and this host.");
+        sb.AppendLine("  MEDIUM  Missing dependency (baseline access never attempted in this run)");
+        sb.AppendLine("          or value drift between baseline and this host.");
         sb.AppendLine("  LOW     Novel failure not present in baseline. May be unrelated.");
         sb.AppendLine();
         sb.AppendLine("For each candidate the report shows what failed, what the baseline observed");
@@ -688,7 +809,8 @@ public sealed class MainForm : Form
         sb.AppendLine("  Microsoft-Windows-Kernel-FileIO    Create/Delete with NTSTATUS result");
         sb.AppendLine("  Microsoft-Windows-Kernel-Registry  Query/Set/Open/Create with NTSTATUS result");
         sb.AppendLine("                                     + value content SHA-256 on first encounter");
-        sb.AppendLine("  Microsoft-Windows-Kernel-Network   TCP connect attempts (IPv4 and IPv6)");
+        sb.AppendLine("  Microsoft-Windows-Kernel-Network   TCP connects; failed connects surface as");
+        sb.AppendLine("                                     missing dependencies in the diff");
         sb.AppendLine();
         sb.AppendLine("User-mode providers (second session, best-effort):");
         sb.AppendLine();
@@ -714,6 +836,7 @@ public sealed class MainForm : Form
         sb.AppendLine("- Uses a private kernel session. Coexists with PerfView, xperf, the");
         sb.AppendLine("  ET Ducky agent, and other ETW tools. Windows allows up to 8 concurrent");
         sb.AppendLine("  kernel sessions per host; only if every slot is taken does Start fail.");
+        sb.AppendLine("  Sessions stranded by a crash are cleaned up at next launch.");
         sb.AppendLine();
         sb.AppendLine("- Administrator required. The manifest requests elevation; without it,");
         sb.AppendLine("  the kernel session can't open.");
@@ -756,9 +879,9 @@ public sealed class MainForm : Form
         if (_session is null || _tracker is null) return;
 
         var trackedNow = _tracker.TrackedCount;
-        var totalSeen  = _session.MatchedPids.Count;
+        var totalSeen  = _session.MatchedPidCount;
         var elapsed    = _session.Duration;
-        var rows       = _session.Accesses.Count;
+        var rows       = _session.TotalEventCount;
 
         var msg = $"Running for {elapsed.TotalSeconds:0.0}s. Tracked PIDs: {trackedNow} now, {totalSeen} seen total. {rows:N0} accesses captured.";
         if (totalSeen == 0)
@@ -769,10 +892,10 @@ public sealed class MainForm : Form
 
         if (_recLiveList != null && _tabs.SelectedIndex == 0)
         {
-            // Tail the last 50 accesses, oldest at top.
-            var tail = _session.Accesses.Count > 50
-                ? _session.Accesses.GetRange(_session.Accesses.Count - 50, 50)
-                : new List<EnvironmentalAccess>(_session.Accesses);
+            // Tail of the most recent accesses, oldest at top — a locked
+            // snapshot, so the ETW threads can keep appending while we
+            // paint without tearing the underlying collection.
+            var tail = _session.SnapshotTail();
 
             _recLiveList.BeginUpdate();
             _recLiveList.Items.Clear();

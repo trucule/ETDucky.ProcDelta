@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
@@ -25,21 +25,46 @@ namespace ETDucky.ProcDelta.Services;
 /// </summary>
 public sealed class EnvironmentalCapture : IDisposable
 {
+    /// <summary>
+    /// Common prefix for every session this tool creates (kernel and
+    /// app-runtime). Used by <see cref="CleanupOrphanedSessions"/> to
+    /// reclaim slots left behind by a crashed run.
+    /// </summary>
+    public const string SessionNamePrefix = "ETDuckyProcDelta";
+
     private readonly ProcessTracker _tracker;
     private readonly CaptureSession _session;
     private readonly RegistryValueCache _registryValues = new();
-    private readonly object _lock = new();
     private TraceEventSession? _trace;
     private Task? _processTask;
-    private CancellationTokenSource? _cts;
+    private volatile bool _stopping;
+
+    /// <summary>
+    /// Raised (from a background thread) when the event pump dies while a
+    /// capture is supposed to be running — parser fault, session torn down
+    /// externally (logman stop), etc. Without this the UI would keep
+    /// showing "Running…" while nothing is being recorded.
+    /// </summary>
+    public event Action<string>? Faulted;
+
+    /// <summary>
+    /// Events the kernel session reported dropped (buffers full), read at
+    /// stop. Non-zero means the baseline/capture is incomplete and the
+    /// operator should be told.
+    /// </summary>
+    public int EventsLost { get; private set; }
 
     /// <summary>
     /// File-I/O Init events (Create / Delete) carry the path and IRP pointer
     /// but not the result. The matching FileIOOperationEnd event carries the
     /// NTSTATUS but not the path. Same IrpPtr links the pair. This dictionary
-    /// holds the Init side while waiting for the End.
+    /// holds the Init side while waiting for the End. Swept periodically so
+    /// Init events whose End never arrives can't accumulate forever.
     /// </summary>
     private readonly ConcurrentDictionary<ulong, PendingFileOp> _pendingFileOps = new();
+    private int _pendingSweepCounter;
+    private const int PendingSweepEvery = 4096;
+    private static readonly TimeSpan PendingMaxAge = TimeSpan.FromSeconds(30);
 
     private readonly record struct PendingFileOp(
         string Operation,
@@ -50,7 +75,8 @@ public sealed class EnvironmentalCapture : IDisposable
 
     /// <summary>
     /// Hashes of registry value contents observed during the capture.
-    /// Populated lazily as Query/SetValue events arrive; consumed by
+    /// Populated as Query/SetValue events arrive (read-back runs on a
+    /// background worker, not the ETW dispatch thread); consumed by
     /// BaselineRecorder during Build to attach ValueHash + ValueType
     /// to the matching entries.
     /// </summary>
@@ -62,6 +88,45 @@ public sealed class EnvironmentalCapture : IDisposable
         _session = session;
     }
 
+    /// <summary>
+    /// Stop and remove ETW sessions left running by a previous crashed
+    /// instance. Session names are randomised per start, so without this
+    /// sweep an orphaned session survives until reboot and permanently
+    /// consumes one of the host's 8 kernel-session slots per crash.
+    /// Only sessions carrying our prefix are touched — they can only be
+    /// strays from this tool.
+    /// </summary>
+    public static void CleanupOrphanedSessions()
+    {
+        try
+        {
+            // If another ProcDelta instance is running it may legitimately
+            // own an active session — don't sweep out from under it.
+            var me = System.Diagnostics.Process.GetCurrentProcess();
+            var others = System.Diagnostics.Process.GetProcessesByName(me.ProcessName);
+            var anotherInstance = others.Any(p => p.Id != me.Id);
+            foreach (var p in others) { try { p.Dispose(); } catch { } }
+            if (anotherInstance) return;
+        }
+        catch { /* if we can't tell, err on the side of sweeping */ }
+
+        try
+        {
+            foreach (var name in TraceEventSession.GetActiveSessionNames()
+                         .Where(n => n.StartsWith(SessionNamePrefix, StringComparison.OrdinalIgnoreCase))
+                         .ToList())
+            {
+                try
+                {
+                    using var stray = TraceEventSession.GetActiveSession(name);
+                    stray?.Stop(noThrow: true);
+                }
+                catch { /* best effort per session */ }
+            }
+        }
+        catch { /* best effort overall */ }
+    }
+
     public void Start()
     {
         if (_trace is not null) throw new InvalidOperationException("Capture already started.");
@@ -69,13 +134,10 @@ public sealed class EnvironmentalCapture : IDisposable
         // Unique private-kernel-session name (any name other than
         // KernelTraceEventParser.KernelSessionName triggers the
         // private-session mechanism). The 32-char limit on ETW session
-        // names plus our 17-char prefix leaves 15 for the GUID fragment.
-        var sessionName = "ETDuckyProcDelta_" + Guid.NewGuid().ToString("N").Substring(0, 14);
+        // names plus our prefix leaves room for the GUID fragment.
+        var sessionName = SessionNamePrefix + "_" + Guid.NewGuid().ToString("N").Substring(0, 14);
 
-        try { TraceEventSession.GetActiveSession(sessionName)?.Dispose(); }
-        catch { /* best effort */ }
-
-        _cts = new CancellationTokenSource();
+        _stopping = false;
         _trace = new TraceEventSession(sessionName) { StopOnDispose = true };
 
         _trace.EnableKernelProvider(
@@ -83,15 +145,26 @@ public sealed class EnvironmentalCapture : IDisposable
           | KernelTraceEventParser.Keywords.FileIOInit    // Create/Delete Init (paths + IrpPtr)
           | KernelTraceEventParser.Keywords.FileIO        // OperationEnd (IrpPtr + NTSTATUS)
           | KernelTraceEventParser.Keywords.Registry      // every registry op with status
-          | KernelTraceEventParser.Keywords.NetworkTCPIP  // TCP connect
+          | KernelTraceEventParser.Keywords.NetworkTCPIP  // TCP connect + connect failures
         );
 
         WireCallbacks(_trace.Source.Kernel);
 
         _processTask = Task.Run(() =>
         {
-            try { _trace.Source.Process(); }
-            catch { /* expected on dispose */ }
+            string? fault = null;
+            try
+            {
+                _trace.Source.Process();
+                // Process() returned on its own — if we didn't ask it to
+                // stop, the session was torn down externally.
+                if (!_stopping) fault = "the ETW session stopped unexpectedly (possibly stopped by another tool).";
+            }
+            catch (Exception ex)
+            {
+                if (!_stopping) fault = $"{ex.GetType().Name}: {ex.Message}";
+            }
+            if (fault is not null) Faulted?.Invoke(fault);
         });
     }
 
@@ -99,24 +172,30 @@ public sealed class EnvironmentalCapture : IDisposable
     {
         if (_trace is null) return;
 
+        _stopping = true;
         _session.StoppedAtUtc = DateTime.UtcNow;
-        try { _cts?.Cancel(); } catch { }
+
+        try { EventsLost = _trace.EventsLost; } catch { }
         try { _trace.Source.StopProcessing(); } catch { }
 
         if (_processTask is not null)
             await Task.WhenAny(_processTask, Task.Delay(TimeSpan.FromSeconds(2)));
 
+        // Let queued registry read-backs finish before the recorder
+        // consumes the cache.
+        try { await _registryValues.DrainAsync(TimeSpan.FromSeconds(5)); } catch { }
+
         try { _trace.Dispose(); } catch { }
         _trace = null;
         _processTask = null;
-        _cts?.Dispose();
-        _cts = null;
     }
 
     public void Dispose()
     {
+        _stopping = true;
         try { _trace?.Dispose(); } catch { }
         _trace = null;
+        try { _registryValues.Dispose(); } catch { }
     }
 
     private void WireCallbacks(KernelTraceEventParser kernel)
@@ -129,7 +208,7 @@ public sealed class EnvironmentalCapture : IDisposable
             _tracker.OnProcessStart(data.ProcessID, data.ParentID, data.ImageFileName);
             if (_tracker.IsTracked(data.ProcessID))
             {
-                AppendIfTracked(new EnvironmentalAccess
+                _session.Append(new EnvironmentalAccess
                 {
                     Kind         = AccessKind.Process,
                     Target       = data.ImageFileName ?? string.Empty,
@@ -140,15 +219,26 @@ public sealed class EnvironmentalCapture : IDisposable
                     ProcessImage = _tracker.ImageNameFor(data.ProcessID),
                     TimestampUtc = data.TimeStamp.ToUniversalTime(),
                 });
-                _session.MatchedPids.Add(data.ProcessID);
+                _session.AddMatchedPid(data.ProcessID);
             }
+        };
+
+        // Rundown: processes that were already running when the session
+        // started. Feeds the tracker (so pre-existing children of a
+        // matched process are followed) but records no access row — a
+        // DCStart is not an observed action by the app.
+        kernel.ProcessDCStart += data =>
+        {
+            _tracker.OnProcessStart(data.ProcessID, data.ParentID, data.ImageFileName);
+            if (_tracker.IsTracked(data.ProcessID))
+                _session.AddMatchedPid(data.ProcessID);
         };
 
         kernel.ProcessStop += data =>
         {
             if (_tracker.IsTracked(data.ProcessID))
             {
-                AppendIfTracked(new EnvironmentalAccess
+                _session.Append(new EnvironmentalAccess
                 {
                     Kind         = AccessKind.Process,
                     Target       = data.ImageFileName ?? string.Empty,
@@ -182,6 +272,7 @@ public sealed class EnvironmentalCapture : IDisposable
                 ProcessId:     data.ProcessID,
                 TimestampUtc:  data.TimeStamp.ToUniversalTime(),
                 CreateOptions: unchecked((uint)data.CreateOptions));
+            SweepPendingIfDue();
         };
 
         kernel.FileIODelete += data =>
@@ -193,6 +284,7 @@ public sealed class EnvironmentalCapture : IDisposable
                 ProcessId:     data.ProcessID,
                 TimestampUtc:  data.TimeStamp.ToUniversalTime(),
                 CreateOptions: 0);
+            SweepPendingIfDue();
         };
 
         kernel.FileIOOperationEnd += data =>
@@ -201,30 +293,42 @@ public sealed class EnvironmentalCapture : IDisposable
             if (!_pendingFileOps.TryRemove(key, out var pending)) return;
 
             var image = _tracker.ImageNameFor(pending.ProcessId);
-            AppendIfTracked(new EnvironmentalAccess
+            _session.Append(new EnvironmentalAccess
             {
                 Kind         = AccessKind.File,
                 Target       = PathNormalizer.Normalize(pending.FileName),
                 Operation    = pending.Operation,
                 Result       = NtStatusName(data.NtStatus),
-                Detail       = pending.CreateOptions != 0 ? $"options=0x{pending.CreateOptions:X}" : string.Empty,
+                // CreateOptions deliberately NOT recorded in Detail: Detail
+                // participates in the aggregation/diff key, and apps open
+                // the same file with varying options across runs — keying
+                // on them turns identical file dependencies into spurious
+                // "not in baseline" rows.
+                Detail       = string.Empty,
                 ProcessId    = pending.ProcessId,
                 ProcessImage = image,
                 TimestampUtc = pending.TimestampUtc,
             });
         };
 
-        // Network — TCP connect successes (both IPv4 and IPv6).
+        // Network — TCP connects (IPv4 + IPv6). The kernel's Connect
+        // events only fire for SUCCESSFUL connections, so per-target
+        // failure diagnosis comes from the diff engine's missing-
+        // dependency pass (baseline connect present, live absent).
         kernel.TcpIpConnect += data =>
         {
             if (!_tracker.IsTracked(data.ProcessID)) return;
-            AppendIfTracked(new EnvironmentalAccess
+            _session.Append(new EnvironmentalAccess
             {
                 Kind         = AccessKind.Network,
                 Target       = FormatEndpoint(data.daddr, data.dport),
                 Operation    = "Connect",
                 Result       = "SUCCESS",
-                Detail       = $"src={FormatEndpoint(data.saddr, data.sport)}",
+                // The source endpoint (ephemeral port!) must not go into
+                // Detail — Detail is part of the aggregation/diff key, and
+                // an ephemeral port makes every connection a unique row
+                // that can never match the baseline.
+                Detail       = string.Empty,
                 ProcessId    = data.ProcessID,
                 ProcessImage = _tracker.ImageNameFor(data.ProcessID),
                 TimestampUtc = data.TimeStamp.ToUniversalTime(),
@@ -234,33 +338,94 @@ public sealed class EnvironmentalCapture : IDisposable
         kernel.TcpIpConnectIPV6 += data =>
         {
             if (!_tracker.IsTracked(data.ProcessID)) return;
-            AppendIfTracked(new EnvironmentalAccess
+            _session.Append(new EnvironmentalAccess
             {
                 Kind         = AccessKind.Network,
                 Target       = FormatEndpoint(data.daddr, data.dport),
                 Operation    = "Connect",
                 Result       = "SUCCESS",
-                Detail       = $"src={FormatEndpoint(data.saddr, data.sport)} v6",
+                Detail       = string.Empty,
                 ProcessId    = data.ProcessID,
                 ProcessImage = _tracker.ImageNameFor(data.ProcessID),
                 TimestampUtc = data.TimeStamp.ToUniversalTime(),
             });
         };
+
+        // TCP failure event. It carries only a protocol + failure code (no
+        // address, and often no usable PID), so it can't be diffed per
+        // target — but its presence during a tracked window is a strong
+        // supporting signal alongside a missing-dependency finding.
+        kernel.TcpIpFail += data =>
+        {
+            // Attribute when possible; record unattributed fails too —
+            // they are rare, and a connect failure during the capture
+            // window is diagnostic even without a PID.
+            var tracked = _tracker.IsTracked(data.ProcessID);
+            if (!tracked && data.ProcessID > 0) return; // some other app's failure
+            _session.Append(new EnvironmentalAccess
+            {
+                Kind         = AccessKind.Network,
+                Target       = "tcp-connect-failure",
+                Operation    = "ConnectFail",
+                Result       = $"FailureCode={data.FailureCode}",
+                Detail       = $"proto={data.Proto}",
+                ProcessId    = data.ProcessID,
+                ProcessImage = tracked ? _tracker.ImageNameFor(data.ProcessID) : string.Empty,
+                TimestampUtc = data.TimeStamp.ToUniversalTime(),
+            });
+        };
+    }
+
+    /// <summary>
+    /// Reusable scratch buffer for <see cref="RegistryStatusOf"/>. Safe
+    /// without locking: each ETW session dispatches its callbacks on a
+    /// single thread, and only the kernel session's callbacks touch this.
+    /// </summary>
+    private readonly byte[] _regStatusBuf = new byte[4];
+
+    /// <summary>
+    /// WORKAROUND for an upstream TraceEvent bug (present in 3.2.4 and
+    /// still in perfview main): RegistryTraceData.Status parses the
+    /// NTSTATUS with GetInt32At(8) but DISCARDS the value and always
+    /// returns 0 — so every registry op would read as SUCCESS and a
+    /// registry regression (a headline diagnosis of this tool) could
+    /// never fire. Read the NTSTATUS directly from the raw payload
+    /// instead: Int32 at offset 8 for V2+ events, the same offset the
+    /// broken property intended to use.
+    /// </summary>
+    private int RegistryStatusOf(RegistryTraceData data)
+    {
+        try
+        {
+            if (data.Version < 2 || data.EventDataLength < 12) return 0;
+            data.EventData(_regStatusBuf, 0, 8, 4);
+            return BitConverter.ToInt32(_regStatusBuf, 0);
+        }
+        catch { return 0; }
     }
 
     private void RecordRegistry(RegistryTraceData data, string op)
     {
         if (!_tracker.IsTracked(data.ProcessID)) return;
-        var keyName = data.KeyName ?? string.Empty;
-        var valueName = data.ValueName ?? string.Empty;
-        var success = data.Status == 0;
 
-        AppendIfTracked(new EnvironmentalAccess
+        // KeyName resolution relies on TraceEvent's KCB map; operations on
+        // keys opened before the session started can resolve to an empty
+        // name. An empty target can never be matched against a baseline or
+        // inspected live, so it would only pollute the aggregate — drop it.
+        var keyName = data.KeyName;
+        if (string.IsNullOrEmpty(keyName)) return;
+
+        var normalizedKey = PathNormalizer.NormalizeRegistry(keyName);
+        var valueName = data.ValueName ?? string.Empty;
+        var status = RegistryStatusOf(data);
+        var success = status == 0;
+
+        _session.Append(new EnvironmentalAccess
         {
             Kind         = AccessKind.Registry,
-            Target       = keyName,
+            Target       = normalizedKey,
             Operation    = op,
-            Result       = success ? "SUCCESS" : NtStatusName(data.Status),
+            Result       = success ? "SUCCESS" : NtStatusName(status),
             Detail       = valueName,
             ProcessId    = data.ProcessID,
             ProcessImage = _tracker.ImageNameFor(data.ProcessID),
@@ -269,17 +434,31 @@ public sealed class EnvironmentalCapture : IDisposable
 
         // Hash the value content on first encounter of (key, valueName).
         // Only on success (failed reads have nothing to hash) and only for
-        // operations that actually touch a value.
+        // operations that actually touch a value. Keyed by the normalized
+        // path — the same form baseline entries carry.
         if (success && !string.IsNullOrEmpty(valueName)
             && (op == "QueryValue" || op == "SetValue"))
         {
-            _registryValues.Observe(keyName, valueName);
+            _registryValues.Observe(normalizedKey, valueName);
         }
     }
 
-    private void AppendIfTracked(EnvironmentalAccess access)
+    /// <summary>
+    /// Every <see cref="PendingSweepEvery"/> Init events, evict pending
+    /// file ops older than <see cref="PendingMaxAge"/> — their End event
+    /// is never coming (dropped, or the IRP completed unobserved), and a
+    /// stale entry could otherwise mispair with a reused IRP pointer.
+    /// </summary>
+    private void SweepPendingIfDue()
     {
-        lock (_lock) _session.Accesses.Add(access);
+        if (Interlocked.Increment(ref _pendingSweepCounter) % PendingSweepEvery != 0) return;
+
+        var cutoff = DateTime.UtcNow - PendingMaxAge;
+        foreach (var kv in _pendingFileOps)
+        {
+            if (kv.Value.TimestampUtc < cutoff)
+                _pendingFileOps.TryRemove(kv.Key, out _);
+        }
     }
 
     private static string FormatEndpoint(IPAddress? addr, int port)

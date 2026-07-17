@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.Versioning;
 using System.Text;
+using System.Threading.Tasks;
 using ETDucky.ProcDelta.Models;
 
 namespace ETDucky.ProcDelta.Services;
@@ -11,6 +12,18 @@ namespace ETDucky.ProcDelta.Services;
 /// Compares a live <see cref="CaptureSession"/> against a known-good
 /// <see cref="Baseline"/> and produces a ranked <see cref="DiagnosisReport"/>
 /// of candidate root causes.
+///
+/// The diff runs in BOTH directions:
+///   live → baseline: regressions, value drift, novel failures;
+///   baseline → live: entries the working machine exercised that this run
+///                    never touched at all (missing dependencies) — the
+///                    only way an outright-absent access (e.g. a TCP
+///                    connect that never succeeded, since the kernel emits
+///                    no per-target failure event) can surface.
+///
+/// Live-state enrichment (registry re-read, file/ACL check, TCP probe) is
+/// parallelised — the probes are independent and a serial pass over N
+/// unreachable hosts costs N × 3s.
 ///
 /// The diff is deterministic. Classification rules are listed in the README
 /// and on the <see cref="DiagnosisReport.Classification"/> enum.
@@ -26,64 +39,92 @@ public static class DiffEngine
         var byKey = new Dictionary<string, Baseline.Entry>(StringComparer.OrdinalIgnoreCase);
         foreach (var e in baseline.Entries)
         {
-            byKey[ComposeKey(e.Kind, e.Target, e.Operation, e.Detail)] = e;
+            byKey[CaptureSession.ComposeKey(e.Kind, e.Target, e.Operation, e.Detail)] = e;
         }
 
-        var liveAggregated = new Dictionary<string, LiveAgg>(StringComparer.OrdinalIgnoreCase);
-        foreach (var a in capture.Accesses)
-        {
-            var k = ComposeKey(a.Kind, PathOrTarget(a), a.Operation, a.Detail);
-            if (liveAggregated.TryGetValue(k, out var agg))
-            {
-                agg.LastResult    = a.Result;
-                agg.LastTimestamp = a.TimestampUtc;
-                agg.Count++;
-            }
-            else
-            {
-                liveAggregated[k] = new LiveAgg
-                {
-                    Kind          = a.Kind,
-                    Target        = PathOrTarget(a),
-                    Operation     = a.Operation,
-                    Detail        = a.Detail,
-                    LastResult    = a.Result,
-                    LastTimestamp = a.TimestampUtc,
-                    Count         = 1,
-                };
-            }
-        }
+        var liveAggregates = capture.SnapshotAggregates();
+        var liveKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        var lastActivity = capture.Accesses.Count > 0
-            ? capture.Accesses.Max(a => a.TimestampUtc)
-            : capture.StoppedAtUtc ?? capture.StartedAtUtc;
-
+        var lastActivity = capture.LastEventUtc;
         var nearExitWindow = TimeSpan.FromSeconds(2);
 
-        var candidates = new List<DiagnosisReport.Candidate>();
-        foreach (var (key, live) in liveAggregated)
+        // ── Pass 1: live → baseline ─────────────────────────────────────
+        var pending = new List<PendingCandidate>();
+        foreach (var live in liveAggregates)
         {
+            var key = CaptureSession.ComposeKey(live.Kind, live.Target, live.Operation, live.Detail);
+            liveKeys.Add(key);
+
             byKey.TryGetValue(key, out var baselineEntry);
 
             var classification = Classify(baselineEntry, live);
             if (classification is null) continue;
 
-            var severity = SeverityFor(classification.Value);
-            var nearExit = (lastActivity - live.LastTimestamp) <= nearExitWindow;
-            var liveState = LiveStateInspector.Inspect(live.Kind, live.Target, live.Detail);
+            pending.Add(new PendingCandidate
+            {
+                Classification = classification.Value,
+                Kind           = live.Kind,
+                Target         = live.Target,
+                Operation      = live.Operation,
+                Detail         = live.Detail,
+                BaselineResult = baselineEntry?.Result ?? "(not in baseline)",
+                CaptureResult  = live.LastResult,
+                NearExit       = (lastActivity - live.LastTimestampUtc) <= nearExitWindow,
+            });
+        }
 
+        // ── Pass 2: baseline → live (missing dependencies) ──────────────
+        // A successful access the working machine made that this run never
+        // attempted (or never got far enough to attempt). "Stop" entries
+        // are skipped — an unexited process is not a missing dependency.
+        foreach (var e in baseline.Entries)
+        {
+            if (e.Operation == "Stop") continue;
+            if (!IsSuccess(e.Result)) continue;
+
+            var key = CaptureSession.ComposeKey(e.Kind, e.Target, e.Operation, e.Detail);
+            if (liveKeys.Contains(key)) continue;
+
+            pending.Add(new PendingCandidate
+            {
+                Classification = DiagnosisReport.Classification.MissingDependency,
+                Kind           = e.Kind,
+                Target         = e.Target,
+                Operation      = e.Operation,
+                Detail         = e.Detail,
+                BaselineResult = e.Result,
+                CaptureResult  = "(not observed in this run)",
+                NearExit       = false,
+            });
+        }
+
+        // ── Enrichment: live state, in parallel ─────────────────────────
+        var liveStates = new string[pending.Count];
+        Parallel.For(0, pending.Count,
+            new ParallelOptions { MaxDegreeOfParallelism = 8 },
+            i =>
+            {
+                var p = pending[i];
+                try { liveStates[i] = LiveStateInspector.Inspect(p.Kind, p.Target, p.Detail); }
+                catch (Exception ex) { liveStates[i] = $"(live inspection failed: {ex.GetType().Name})"; }
+            });
+
+        var candidates = new List<DiagnosisReport.Candidate>(pending.Count);
+        for (var i = 0; i < pending.Count; i++)
+        {
+            var p = pending[i];
             candidates.Add(new DiagnosisReport.Candidate
             {
-                Severity         = severity,
-                Classification   = classification.Value,
-                Kind             = live.Kind,
-                Target           = live.Target,
-                Operation        = live.Operation,
-                Detail           = live.Detail,
-                BaselineResult   = baselineEntry?.Result ?? "(not in baseline)",
-                CaptureResult    = live.LastResult,
-                LiveState        = liveState,
-                NearExit         = nearExit,
+                Severity       = SeverityFor(p.Classification),
+                Classification = p.Classification,
+                Kind           = p.Kind,
+                Target         = p.Target,
+                Operation      = p.Operation,
+                Detail         = p.Detail,
+                BaselineResult = p.BaselineResult,
+                CaptureResult  = p.CaptureResult,
+                LiveState      = liveStates[i],
+                NearExit       = p.NearExit,
             });
         }
 
@@ -101,21 +142,44 @@ public static class DiffEngine
             CaptureHost        = Environment.MachineName,
             BaselineHost       = baseline.RecordedOn,
             CaptureDuration    = capture.Duration,
-            CaptureAccessCount = liveAggregated.Count,
+            CaptureAccessCount = liveAggregates.Count,
             Candidates         = ordered,
         };
     }
 
+    /// <summary>Markdown rendering, for export / tickets.</summary>
     public static string RenderMarkdown(DiagnosisReport report)
+        => Render(report, plain: false);
+
+    /// <summary>
+    /// Plain-text rendering for the in-app report panel, which displays
+    /// raw text — Markdown syntax characters there are just noise.
+    /// </summary>
+    public static string RenderPlainText(DiagnosisReport report)
+        => Render(report, plain: true);
+
+    private static string Render(DiagnosisReport report, bool plain)
     {
+        string B(string s)    => plain ? s : $"**{s}**";
+        string Code(string s) => plain ? s : $"`{s}`";
+
         var sb = new StringBuilder();
-        sb.AppendLine($"# Diagnosis Report — {report.AppName}");
+        var title = $"Diagnosis Report — {report.AppName}";
+        if (plain)
+        {
+            sb.AppendLine(title);
+            sb.AppendLine(new string('=', Math.Min(title.Length, 72)));
+        }
+        else
+        {
+            sb.AppendLine($"# {title}");
+        }
         sb.AppendLine();
-        sb.AppendLine($"- **Process pattern:** `{report.ProcessPattern}`");
-        sb.AppendLine($"- **Generated:** {report.GeneratedAtUtc:yyyy-MM-dd HH:mm:ss} UTC");
-        sb.AppendLine($"- **Capture host:** {report.CaptureHost}  ·  **Baseline host:** {report.BaselineHost}");
-        sb.AppendLine($"- **Baseline source:** `{report.BaselineSource}`");
-        sb.AppendLine($"- **Capture duration:** {report.CaptureDuration.TotalSeconds:0.0}s, {report.CaptureAccessCount} distinct accesses observed");
+        sb.AppendLine($"- {B("Process pattern:")} {Code(report.ProcessPattern)}");
+        sb.AppendLine($"- {B("Generated:")} {report.GeneratedAtUtc:yyyy-MM-dd HH:mm:ss} UTC");
+        sb.AppendLine($"- {B("Capture host:")} {report.CaptureHost}  ·  {B("Baseline host:")} {report.BaselineHost}");
+        sb.AppendLine($"- {B("Baseline source:")} {Code(report.BaselineSource)}");
+        sb.AppendLine($"- {B("Capture duration:")} {report.CaptureDuration.TotalSeconds:0.0}s, {report.CaptureAccessCount} distinct accesses observed");
         sb.AppendLine();
 
         if (report.Candidates.Count == 0)
@@ -130,49 +194,60 @@ public static class DiffEngine
 
         foreach (var group in byCategory)
         {
-            sb.AppendLine($"## {group.Key} severity ({group.Count()})");
+            var heading = $"{group.Key} severity ({group.Count()})";
+            if (plain)
+            {
+                sb.AppendLine(heading);
+                sb.AppendLine(new string('-', Math.Min(heading.Length, 72)));
+            }
+            else
+            {
+                sb.AppendLine($"## {heading}");
+            }
             sb.AppendLine();
             int idx = 1;
             foreach (var c in group)
             {
-                sb.AppendLine($"### {idx}. {ClassificationLabel(c.Classification)} — {c.Kind} `{Truncate(c.Target, 80)}`");
-                if (c.NearExit) sb.AppendLine("*Fired within 2 seconds of the tracked process tree's final activity (strong causal signal).*");
+                var candidateTitle = $"{idx}. {ClassificationLabel(c.Classification)} — {c.Kind} {Code(Truncate(c.Target, 80))}";
+                sb.AppendLine(plain ? candidateTitle : $"### {candidateTitle}");
+                if (c.NearExit)
+                    sb.AppendLine(plain
+                        ? "   Fired within 2 seconds of the tracked process tree's final activity (strong causal signal)."
+                        : "*Fired within 2 seconds of the tracked process tree's final activity (strong causal signal).*");
                 sb.AppendLine();
-                sb.AppendLine($"- **Operation:** {c.Operation}{(string.IsNullOrEmpty(c.Detail) ? "" : "  ·  detail: `" + c.Detail + "`")}");
-                sb.AppendLine($"- **Baseline observed:** `{c.BaselineResult}`");
-                sb.AppendLine($"- **This run observed:** `{c.CaptureResult}`");
-                sb.AppendLine($"- **Live state now:** {c.LiveState}");
+                sb.AppendLine($"- {B("Operation:")} {c.Operation}{(string.IsNullOrEmpty(c.Detail) ? "" : "  ·  detail: " + Code(c.Detail))}");
+                sb.AppendLine($"- {B("Baseline observed:")} {Code(c.BaselineResult)}");
+                sb.AppendLine($"- {B("This run observed:")} {Code(c.CaptureResult)}");
+                sb.AppendLine($"- {B("Live state now:")} {c.LiveState}");
                 sb.AppendLine();
                 idx++;
             }
         }
 
-        sb.AppendLine("---");
+        sb.AppendLine(plain ? new string('-', 40) : "---");
         sb.AppendLine();
-        sb.AppendLine("*Generated by ETDucky.ProcDelta. Deterministic diff against an operator-recorded baseline.*");
+        var footer = "Generated by ETDucky.ProcDelta. Deterministic diff against an operator-recorded baseline.";
+        sb.AppendLine(plain ? footer : $"*{footer}*");
         return sb.ToString();
     }
 
-    private static string ComposeKey(AccessKind kind, string target, string op, string detail)
-        => $"{(int)kind}|{target}|{op}|{detail}";
+    private static bool IsSuccess(string result)
+        => string.Equals(result, "SUCCESS", StringComparison.OrdinalIgnoreCase)
+        || result.StartsWith("ExitCode=0", StringComparison.OrdinalIgnoreCase);
 
-    private static string PathOrTarget(EnvironmentalAccess a) => a.Target;
-
-    private static DiagnosisReport.Classification? Classify(Baseline.Entry? baseline, LiveAgg live)
+    private static DiagnosisReport.Classification? Classify(Baseline.Entry? baseline, AggregatedAccess live)
     {
-        var liveSuccess = string.Equals(live.LastResult, "SUCCESS", StringComparison.OrdinalIgnoreCase);
-        var liveSuccessAlt = live.LastResult.StartsWith("ExitCode=0", StringComparison.OrdinalIgnoreCase);
+        var liveSuccess = IsSuccess(live.LastResult);
 
         if (baseline is null)
         {
-            if (liveSuccess || liveSuccessAlt) return null;
+            if (liveSuccess) return null;
             return DiagnosisReport.Classification.NovelFailure;
         }
 
-        var baselineSuccess = string.Equals(baseline.Result, "SUCCESS", StringComparison.OrdinalIgnoreCase)
-                           || baseline.Result.StartsWith("ExitCode=0", StringComparison.OrdinalIgnoreCase);
+        var baselineSuccess = IsSuccess(baseline.Result);
 
-        if (baselineSuccess && !liveSuccess && !liveSuccessAlt)
+        if (baselineSuccess && !liveSuccess)
             return DiagnosisReport.Classification.Regression;
 
         // Value drift detection. Requires a hashed baseline value, the
@@ -215,16 +290,17 @@ public static class DiffEngine
         };
 
     private static string Truncate(string s, int n)
-        => s.Length <= n ? s : s.Substring(0, n - 1) + "…";
+        => s.Length <= n ? s : s.Substring(0, n) + "…";
 
-    private sealed class LiveAgg
+    private sealed class PendingCandidate
     {
-        public AccessKind Kind { get; set; }
-        public string Target { get; set; } = string.Empty;
-        public string Operation { get; set; } = string.Empty;
-        public string Detail { get; set; } = string.Empty;
-        public string LastResult { get; set; } = string.Empty;
-        public DateTime LastTimestamp { get; set; }
-        public int Count { get; set; }
+        public DiagnosisReport.Classification Classification { get; init; }
+        public AccessKind Kind { get; init; }
+        public string Target { get; init; } = string.Empty;
+        public string Operation { get; init; } = string.Empty;
+        public string Detail { get; init; } = string.Empty;
+        public string BaselineResult { get; init; } = string.Empty;
+        public string CaptureResult { get; init; } = string.Empty;
+        public bool NearExit { get; init; }
     }
 }

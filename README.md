@@ -48,8 +48,14 @@ Typical findings:
 ## Download
 
 Pre-built signed Windows executables are published on the [Releases](../../releases)
-page. Download `ETDucky.ProcDelta.exe`, right-click → Properties → Unblock
-(mark-of-the-web), then run.
+page. Two options:
+
+- **`ETDucky.ProcDelta.exe`** — the portable single-file build. Download it,
+  right-click → Properties → Unblock (mark-of-the-web), then run. Nothing is
+  installed; delete the file to remove it.
+- **`ETDuckyProcDeltaSetup-<version>.exe`** — an installer that places the
+  tool under Program Files and registers it in Programs and Features (Start
+  Menu shortcut, clean uninstall).
 
 The app requires Administrator. The manifest requests elevation; you'll
 see one UAC prompt at launch.
@@ -115,10 +121,15 @@ set before hitting the recorder.
 Paths are normalised at capture time — user-profile and system folders
 become tokens (`<USER>`, `<APPDATA>`, `<LOCALAPPDATA>`, `<PROGRAMFILES>`,
 `<WINDOWS>`, `<SYSTEM32>`, etc.) so baselines port between machines.
+Registry paths are normalised the same way: the recording user's SID
+under `\REGISTRY\USER\…` folds into `HKEY_CURRENT_USER`, and
+`ControlSetNNN` folds to `CurrentControlSet`, so user-hive entries match
+across machines and users. Process patterns accept `*`/`?` wildcards.
 
 ### Baseline
 
-Raw events aggregate by (Kind, Target, Operation, Detail). Each unique
+Events aggregate incrementally during capture by (Kind, Target,
+Operation, Detail) — memory stays flat even on chatty apps. Each unique
 combination becomes one row with an access count and the most recent
 observed result. The result is serialised to JSON with a schemaVersion
 field. Typical size: 50–200 KB.
@@ -143,6 +154,13 @@ key in the baseline:
 | present | missing | **Missing dependency** | Medium |
 | not present | non-SUCCESS | **Novel failure** | Low |
 | same on both sides | — | (suppressed) | — |
+
+The diff runs in both directions: live accesses are classified against
+the baseline, and baseline accesses with no live counterpart become
+missing-dependency candidates. That second pass is how failed TCP
+connects surface — the kernel emits connect events only for successful
+connections, so on the broken machine a blocked host shows up as a
+baseline connect that this run never achieved.
 
 Each candidate is enriched with what the `LiveStateInspector` finds at
 that target on the broken machine right now (registry value content +

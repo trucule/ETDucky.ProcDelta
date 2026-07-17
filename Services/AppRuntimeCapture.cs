@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Threading.Tasks;
 using ETDucky.ProcDelta.Models;
 using Microsoft.Diagnostics.Tracing;
@@ -27,8 +28,12 @@ namespace ETDucky.ProcDelta.Services;
 /// session.
 ///
 /// PID filtering: same <see cref="ProcessTracker"/> the kernel capture
-/// uses, so app-runtime accesses appear in the same
-/// <see cref="CaptureSession"/> tagged with the same ProcessImage.
+/// uses — EXCEPT for the Services provider, whose events are emitted by
+/// the Service Control Manager (services.exe), a PID that is never
+/// tracked. Gating those events on the tracked set silently discarded
+/// every one of them; service lifecycle events are recorded regardless of
+/// PID instead (they are low-volume and diagnostically relevant to the
+/// window being captured).
 /// </summary>
 public sealed class AppRuntimeCapture : IDisposable
 {
@@ -47,9 +52,17 @@ public sealed class AppRuntimeCapture : IDisposable
 
     private readonly ProcessTracker _tracker;
     private readonly CaptureSession _session;
-    private readonly object _lock = new();
     private TraceEventSession? _trace;
     private Task? _processTask;
+    private volatile bool _stopping;
+
+    /// <summary>
+    /// Raised (from a background thread) when the event pump dies while a
+    /// capture is supposed to be running. App-runtime capture is
+    /// best-effort, so the kernel capture continues — but the operator
+    /// should know this surface went dark.
+    /// </summary>
+    public event Action<string>? Faulted;
 
     public AppRuntimeCapture(ProcessTracker tracker, CaptureSession session)
     {
@@ -61,9 +74,9 @@ public sealed class AppRuntimeCapture : IDisposable
     {
         if (_trace is not null) throw new InvalidOperationException("App-runtime capture already started.");
 
-        var sessionName = "ETDuckyProcDeltaApp_" + Guid.NewGuid().ToString("N").Substring(0, 11);
-        try { TraceEventSession.GetActiveSession(sessionName)?.Dispose(); } catch { }
+        var sessionName = EnvironmentalCapture.SessionNamePrefix + "App_" + Guid.NewGuid().ToString("N").Substring(0, 11);
 
+        _stopping = false;
         _trace = new TraceEventSession(sessionName) { StopOnDispose = true };
 
         _trace.EnableProvider(ProviderServices,  TraceEventLevel.Informational);
@@ -81,14 +94,24 @@ public sealed class AppRuntimeCapture : IDisposable
 
         _processTask = Task.Run(() =>
         {
-            try { _trace.Source.Process(); }
-            catch { /* expected on dispose */ }
+            string? fault = null;
+            try
+            {
+                _trace.Source.Process();
+                if (!_stopping) fault = "the app-runtime ETW session stopped unexpectedly.";
+            }
+            catch (Exception ex)
+            {
+                if (!_stopping) fault = $"{ex.GetType().Name}: {ex.Message}";
+            }
+            if (fault is not null) Faulted?.Invoke(fault);
         });
     }
 
     public async Task StopAsync()
     {
         if (_trace is null) return;
+        _stopping = true;
         try { _trace.Source.StopProcessing(); } catch { }
         if (_processTask is not null)
             await Task.WhenAny(_processTask, Task.Delay(TimeSpan.FromSeconds(2)));
@@ -99,23 +122,29 @@ public sealed class AppRuntimeCapture : IDisposable
 
     public void Dispose()
     {
+        _stopping = true;
         try { _trace?.Dispose(); } catch { }
         _trace = null;
     }
 
     private void HandleEvent(TraceEvent data)
     {
-        // Skip events we can't attribute to a tracked process. The kernel
-        // session already feeds the tracker with spawn/exit; by the time
-        // a managed exception or service event fires from a tracked
-        // process, its PID will be in the set.
-        if (!_tracker.IsTracked(data.ProcessID)) return;
-
         // Classify which provider it came from. Cheap GUID compare beats
         // string compare on ProviderName.
         var pg = data.ProviderGuid;
-        if      (pg == ProviderServices)   RecordServiceEvent(data);
-        else if (pg == ProviderWinInet)    RecordWinInetEvent(data);
+
+        // Services events come from services.exe (the SCM), never from a
+        // tracked PID — see class remarks. All other providers emit from
+        // the app's own process and go through the tracked-PID gate.
+        if (pg == ProviderServices)
+        {
+            RecordServiceEvent(data);
+            return;
+        }
+
+        if (!_tracker.IsTracked(data.ProcessID)) return;
+
+        if      (pg == ProviderWinInet)    RecordWinInetEvent(data);
         else if (pg == ProviderCapi2)      RecordCapi2Event(data);
         else if (pg == ProviderClrRuntime) RecordClrEvent(data);
         // else: provider we enabled but don't currently render — ignore.
@@ -131,7 +160,7 @@ public sealed class AppRuntimeCapture : IDisposable
 
         var svc = TryPayloadString(data, "ServiceName") ?? TryPayloadString(data, "Name") ?? "(unknown)";
         var result = ExtractResult(data);
-        Append(new EnvironmentalAccess
+        _session.Append(new EnvironmentalAccess
         {
             Kind         = AccessKind.Process,
             Target       = $"service:{svc}",
@@ -139,7 +168,7 @@ public sealed class AppRuntimeCapture : IDisposable
             Result       = result,
             Detail       = data.ProviderName,
             ProcessId    = data.ProcessID,
-            ProcessImage = _tracker.ImageNameFor(data.ProcessID),
+            ProcessImage = "services.exe",
             TimestampUtc = data.TimeStamp.ToUniversalTime(),
         });
     }
@@ -155,7 +184,7 @@ public sealed class AppRuntimeCapture : IDisposable
                ?? TryPayloadString(data, "Hostname")
                ?? "(unknown)";
         var result = ExtractResult(data);
-        Append(new EnvironmentalAccess
+        _session.Append(new EnvironmentalAccess
         {
             Kind         = AccessKind.Network,
             Target       = url,
@@ -177,7 +206,7 @@ public sealed class AppRuntimeCapture : IDisposable
                    ?? TryPayloadString(data, "CertificateName")
                    ?? "(unknown subject)";
         var result = ExtractResult(data);
-        Append(new EnvironmentalAccess
+        _session.Append(new EnvironmentalAccess
         {
             Kind         = AccessKind.Network,    // cert validation is a network-adjacent dependency
             Target       = $"cert:{subject}",
@@ -205,7 +234,7 @@ public sealed class AppRuntimeCapture : IDisposable
             var exType = TryPayloadString(data, "ExceptionType");
             var asm = TryPayloadString(data, "FullyQualifiedAssemblyName") ?? TryPayloadString(data, "AssemblyName");
             var target = exType ?? asm ?? "(unknown)";
-            Append(new EnvironmentalAccess
+            _session.Append(new EnvironmentalAccess
             {
                 Kind         = AccessKind.Process,
                 Target       = $"clr:{target}",
@@ -220,11 +249,6 @@ public sealed class AppRuntimeCapture : IDisposable
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────
-
-    private void Append(EnvironmentalAccess access)
-    {
-        lock (_lock) _session.Accesses.Add(access);
-    }
 
     /// <summary>
     /// Best-effort: extract a payload string by field name, returning null
@@ -245,19 +269,48 @@ public sealed class AppRuntimeCapture : IDisposable
     private static string ExtractResult(TraceEvent data)
     {
         // Convention: providers commonly use "Status", "ErrorCode",
-        // "Result", or "HResult" for outcome. Look for each in turn and
-        // surface as a symbolic string when zero, else as the raw value.
+        // "Result", or "HResult" for outcome. Look for each in turn.
         foreach (var field in new[] { "Status", "ErrorCode", "Result", "HResult" })
         {
             var v = TryPayloadString(data, field);
             if (v is null) continue;
-            if (v == "0" || v == "0x0" || v.Equals("SUCCESS", StringComparison.OrdinalIgnoreCase))
-                return "SUCCESS";
-            return v;
+            return NormalizeOutcome(v);
         }
         // No outcome field — call it SUCCESS for diff purposes (the event
         // fired, that's a positive observation in itself).
         return "SUCCESS";
+    }
+
+    /// <summary>
+    /// Canonicalise an outcome value so the same code compares equal
+    /// between baseline and live even when one OS build's manifest renders
+    /// it decimal and another hex ("2147954407" vs "0x80072EE7").
+    /// Zero in any spelling → "SUCCESS"; other numerics → "0xXXXXXXXX";
+    /// non-numeric strings pass through unchanged.
+    /// </summary>
+    private static string NormalizeOutcome(string v)
+    {
+        var s = v.Trim();
+        if (s.Length == 0) return "SUCCESS";
+        if (s.Equals("SUCCESS", StringComparison.OrdinalIgnoreCase)) return "SUCCESS";
+
+        ulong parsed;
+        if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!ulong.TryParse(s.Substring(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out parsed))
+                return v;
+        }
+        else if (long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var dec))
+        {
+            parsed = unchecked((ulong)dec);
+        }
+        else
+        {
+            return v;
+        }
+
+        if (parsed == 0) return "SUCCESS";
+        return $"0x{unchecked((uint)parsed):X8}";
     }
 
     private static bool IsServiceLifecycleEvent(string name)
