@@ -1,6 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
 using System.Text.RegularExpressions;
 
 namespace ETDucky.ProcDelta.Services;
@@ -55,16 +52,16 @@ public static class PathNormalizer
 
     static PathNormalizer()
     {
-        var userProfile     = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var localAppData    = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var appData         = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        var programData     = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-        var programFiles    = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
         var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-        var windowsDir      = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-        var system32        = Environment.GetFolderPath(Environment.SpecialFolder.System);
-        var temp            = Path.GetTempPath().TrimEnd('\\', '/');
-        var users           = Path.GetDirectoryName(userProfile) ?? "C:\\Users";
+        var windowsDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        var system32 = Environment.GetFolderPath(Environment.SpecialFolder.System);
+        var temp = Path.GetTempPath().TrimEnd('\\', '/');
+        var users = Path.GetDirectoryName(userProfile) ?? "C:\\Users";
 
         _replacements = new List<(string, string)>
         {

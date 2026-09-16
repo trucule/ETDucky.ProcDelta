@@ -1,6 +1,4 @@
-using System;
 using System.Globalization;
-using System.Threading.Tasks;
 using ETDucky.ProcDelta.Models;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Session;
@@ -39,16 +37,16 @@ public sealed class AppRuntimeCapture : IDisposable
 {
     // Provider GUIDs are stable across Windows releases. Sourced from
     // each provider's manifest.
-    private static readonly Guid ProviderServices  = new("0063715b-eeda-4007-9429-ad526f62696e");
-    private static readonly Guid ProviderWinInet   = new("43d1a55c-76d6-4f7e-995c-64c711e5cafe");
-    private static readonly Guid ProviderCapi2     = new("5bbca4a8-b209-48dc-a8c7-b23d3e5216fb");
-    private static readonly Guid ProviderClrRuntime= new("e13c0d23-ccbc-4e12-931b-d9cc2eee27e4");
+    private static readonly Guid ProviderServices = new("0063715b-eeda-4007-9429-ad526f62696e");
+    private static readonly Guid ProviderWinInet = new("43d1a55c-76d6-4f7e-995c-64c711e5cafe");
+    private static readonly Guid ProviderCapi2 = new("5bbca4a8-b209-48dc-a8c7-b23d3e5216fb");
+    private static readonly Guid ProviderClrRuntime = new("e13c0d23-ccbc-4e12-931b-d9cc2eee27e4");
 
     // .NET CLR keywords — values from clretwall.man in the .NET source.
     // We enable Exception (0x8000) and Loader (0x8) for managed-exception
     // surface and assembly-load-failure surface respectively.
     private const ulong ClrKeywordException = 0x8000;
-    private const ulong ClrKeywordLoader    = 0x8;
+    private const ulong ClrKeywordLoader = 0x8;
 
     private readonly ProcessTracker _tracker;
     private readonly CaptureSession _session;
@@ -79,9 +77,9 @@ public sealed class AppRuntimeCapture : IDisposable
         _stopping = false;
         _trace = new TraceEventSession(sessionName) { StopOnDispose = true };
 
-        _trace.EnableProvider(ProviderServices,  TraceEventLevel.Informational);
-        _trace.EnableProvider(ProviderWinInet,   TraceEventLevel.Informational);
-        _trace.EnableProvider(ProviderCapi2,     TraceEventLevel.Warning);
+        _trace.EnableProvider(ProviderServices, TraceEventLevel.Informational);
+        _trace.EnableProvider(ProviderWinInet, TraceEventLevel.Informational);
+        _trace.EnableProvider(ProviderCapi2, TraceEventLevel.Warning);
         _trace.EnableProvider(ProviderClrRuntime,
             TraceEventLevel.Informational,
             ClrKeywordException | ClrKeywordLoader);
@@ -144,8 +142,8 @@ public sealed class AppRuntimeCapture : IDisposable
 
         if (!_tracker.IsTracked(data.ProcessID)) return;
 
-        if      (pg == ProviderWinInet)    RecordWinInetEvent(data);
-        else if (pg == ProviderCapi2)      RecordCapi2Event(data);
+        if (pg == ProviderWinInet) RecordWinInetEvent(data);
+        else if (pg == ProviderCapi2) RecordCapi2Event(data);
         else if (pg == ProviderClrRuntime) RecordClrEvent(data);
         // else: provider we enabled but don't currently render — ignore.
     }
@@ -162,12 +160,12 @@ public sealed class AppRuntimeCapture : IDisposable
         var result = ExtractResult(data);
         _session.Append(new EnvironmentalAccess
         {
-            Kind         = AccessKind.Process,
-            Target       = $"service:{svc}",
-            Operation    = name,
-            Result       = result,
-            Detail       = data.ProviderName,
-            ProcessId    = data.ProcessID,
+            Kind = AccessKind.Process,
+            Target = $"service:{svc}",
+            Operation = name,
+            Result = result,
+            Detail = data.ProviderName,
+            ProcessId = data.ProcessID,
             ProcessImage = "services.exe",
             TimestampUtc = data.TimeStamp.ToUniversalTime(),
         });
@@ -186,12 +184,12 @@ public sealed class AppRuntimeCapture : IDisposable
         var result = ExtractResult(data);
         _session.Append(new EnvironmentalAccess
         {
-            Kind         = AccessKind.Network,
-            Target       = url,
-            Operation    = name,
-            Result       = result,
-            Detail       = data.ProviderName,
-            ProcessId    = data.ProcessID,
+            Kind = AccessKind.Network,
+            Target = url,
+            Operation = name,
+            Result = result,
+            Detail = data.ProviderName,
+            ProcessId = data.ProcessID,
             ProcessImage = _tracker.ImageNameFor(data.ProcessID),
             TimestampUtc = data.TimeStamp.ToUniversalTime(),
         });
@@ -208,12 +206,12 @@ public sealed class AppRuntimeCapture : IDisposable
         var result = ExtractResult(data);
         _session.Append(new EnvironmentalAccess
         {
-            Kind         = AccessKind.Network,    // cert validation is a network-adjacent dependency
-            Target       = $"cert:{subject}",
-            Operation    = name,
-            Result       = result,
-            Detail       = data.ProviderName,
-            ProcessId    = data.ProcessID,
+            Kind = AccessKind.Network,    // cert validation is a network-adjacent dependency
+            Target = $"cert:{subject}",
+            Operation = name,
+            Result = result,
+            Detail = data.ProviderName,
+            ProcessId = data.ProcessID,
             ProcessImage = _tracker.ImageNameFor(data.ProcessID),
             TimestampUtc = data.TimeStamp.ToUniversalTime(),
         });
@@ -236,12 +234,12 @@ public sealed class AppRuntimeCapture : IDisposable
             var target = exType ?? asm ?? "(unknown)";
             _session.Append(new EnvironmentalAccess
             {
-                Kind         = AccessKind.Process,
-                Target       = $"clr:{target}",
-                Operation    = name,
-                Result       = TryPayloadString(data, "ExceptionMessage") ?? "(event)",
-                Detail       = ".NET CLR Runtime",
-                ProcessId    = data.ProcessID,
+                Kind = AccessKind.Process,
+                Target = $"clr:{target}",
+                Operation = name,
+                Result = TryPayloadString(data, "ExceptionMessage") ?? "(event)",
+                Detail = ".NET CLR Runtime",
+                ProcessId = data.ProcessID,
                 ProcessImage = _tracker.ImageNameFor(data.ProcessID),
                 TimestampUtc = data.TimeStamp.ToUniversalTime(),
             });
@@ -315,17 +313,17 @@ public sealed class AppRuntimeCapture : IDisposable
 
     private static bool IsServiceLifecycleEvent(string name)
         => name.Contains("ServiceStart", StringComparison.OrdinalIgnoreCase)
-        || name.Contains("ServiceStop",  StringComparison.OrdinalIgnoreCase)
-        || name.Contains("ServiceFail",  StringComparison.OrdinalIgnoreCase)
+        || name.Contains("ServiceStop", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("ServiceFail", StringComparison.OrdinalIgnoreCase)
         || name.Contains("ServiceError", StringComparison.OrdinalIgnoreCase)
-        || name.Contains("StartType",    StringComparison.OrdinalIgnoreCase);
+        || name.Contains("StartType", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsWinInetInterestingEvent(string name)
-        => name.Contains("OpenRequest",  StringComparison.OrdinalIgnoreCase)
-        || name.Contains("SendRequest",  StringComparison.OrdinalIgnoreCase)
-        || name.Contains("Connect",      StringComparison.OrdinalIgnoreCase)
-        || name.Contains("Resolve",      StringComparison.OrdinalIgnoreCase)
-        || name.Contains("Error",        StringComparison.OrdinalIgnoreCase)
-        || name.Contains("Failure",      StringComparison.OrdinalIgnoreCase)
-        || name.Contains("ProxyDetect",  StringComparison.OrdinalIgnoreCase);
+        => name.Contains("OpenRequest", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("SendRequest", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("Connect", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("Resolve", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("Error", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("Failure", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("ProxyDetect", StringComparison.OrdinalIgnoreCase);
 }

@@ -1,6 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using ETDucky.ProcDelta.Models;
 
 namespace ETDucky.ProcDelta.Services;
@@ -41,14 +38,14 @@ public static class BaselineRecorder
 
                 return new Baseline.Entry
                 {
-                    Kind        = a.Kind,
-                    Target      = a.Target,
-                    Operation   = a.Operation,
-                    Detail      = a.Detail,
-                    Result      = a.LastResult,
+                    Kind = a.Kind,
+                    Target = a.Target,
+                    Operation = a.Operation,
+                    Detail = a.Detail,
+                    Result = a.LastResult,
                     AccessCount = a.Count,
-                    ValueHash   = hashed?.Hash,
-                    ValueType   = hashed?.TypeName,
+                    ValueHash = hashed?.Hash,
+                    ValueType = hashed?.TypeName,
                 };
             })
             .OrderBy(e => e.Kind)
@@ -58,15 +55,15 @@ public static class BaselineRecorder
 
         return new Baseline
         {
-            SchemaVersion     = 1,
-            AppName           = appName,
-            ProcessPattern    = processPattern,
+            SchemaVersion = 1,
+            AppName = appName,
+            ProcessPattern = processPattern,
             ActionDescription = actionDescription,
-            RecordedAtUtc     = session.StartedAtUtc,
-            RecordedOn        = Environment.MachineName,
-            RecordedBy        = Environment.UserName,
-            Duration          = session.Duration,
-            Entries           = entries,
+            RecordedAtUtc = session.StartedAtUtc,
+            RecordedOn = Environment.MachineName,
+            RecordedBy = Environment.UserName,
+            Duration = session.Duration,
+            Entries = entries,
         };
     }
 }

@@ -1,13 +1,10 @@
-using System;
 using System.Collections.Concurrent;
-using System.Linq;
 using System.Net;
-using System.Threading;
-using System.Threading.Tasks;
 using ETDucky.ProcDelta.Models;
 using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Diagnostics.Tracing.Parsers.Kernel;
 using Microsoft.Diagnostics.Tracing.Session;
+using System.Globalization;
 
 namespace ETDucky.ProcDelta.Services;
 
@@ -210,12 +207,12 @@ public sealed class EnvironmentalCapture : IDisposable
             {
                 _session.Append(new EnvironmentalAccess
                 {
-                    Kind         = AccessKind.Process,
-                    Target       = data.ImageFileName ?? string.Empty,
-                    Operation    = "Start",
-                    Result       = "SUCCESS",
-                    Detail       = $"parent PID {data.ParentID}",
-                    ProcessId    = data.ProcessID,
+                    Kind = AccessKind.Process,
+                    Target = data.ImageFileName ?? string.Empty,
+                    Operation = "Start",
+                    Result = "SUCCESS",
+                    Detail = $"parent PID {data.ParentID}",
+                    ProcessId = data.ProcessID,
                     ProcessImage = _tracker.ImageNameFor(data.ProcessID),
                     TimestampUtc = data.TimeStamp.ToUniversalTime(),
                 });
@@ -240,12 +237,12 @@ public sealed class EnvironmentalCapture : IDisposable
             {
                 _session.Append(new EnvironmentalAccess
                 {
-                    Kind         = AccessKind.Process,
-                    Target       = data.ImageFileName ?? string.Empty,
-                    Operation    = "Stop",
-                    Result       = $"ExitCode={data.ExitStatus}",
-                    Detail       = string.Empty,
-                    ProcessId    = data.ProcessID,
+                    Kind = AccessKind.Process,
+                    Target = data.ImageFileName ?? string.Empty,
+                    Operation = "Stop",
+                    Result = $"ExitCode={data.ExitStatus}",
+                    Detail = string.Empty,
+                    ProcessId = data.ProcessID,
                     ProcessImage = _tracker.ImageNameFor(data.ProcessID),
                     TimestampUtc = data.TimeStamp.ToUniversalTime(),
                 });
@@ -254,11 +251,11 @@ public sealed class EnvironmentalCapture : IDisposable
         };
 
         // Registry — Status is non-zero on failure.
-        kernel.RegistryQueryValue  += d => RecordRegistry(d, "QueryValue");
-        kernel.RegistrySetValue    += d => RecordRegistry(d, "SetValue");
-        kernel.RegistryOpen        += d => RecordRegistry(d, "OpenKey");
-        kernel.RegistryCreate      += d => RecordRegistry(d, "CreateKey");
-        kernel.RegistryDelete      += d => RecordRegistry(d, "DeleteKey");
+        kernel.RegistryQueryValue += d => RecordRegistry(d, "QueryValue");
+        kernel.RegistrySetValue += d => RecordRegistry(d, "SetValue");
+        kernel.RegistryOpen += d => RecordRegistry(d, "OpenKey");
+        kernel.RegistryCreate += d => RecordRegistry(d, "CreateKey");
+        kernel.RegistryDelete += d => RecordRegistry(d, "DeleteKey");
         kernel.RegistryDeleteValue += d => RecordRegistry(d, "DeleteValue");
 
         // File I/O — Init events carry the path + IRP, OperationEnd
@@ -267,10 +264,10 @@ public sealed class EnvironmentalCapture : IDisposable
         {
             if (!_tracker.IsTracked(data.ProcessID)) return;
             _pendingFileOps[unchecked((ulong)(long)data.IrpPtr)] = new PendingFileOp(
-                Operation:     "Create",
-                FileName:      data.FileName ?? string.Empty,
-                ProcessId:     data.ProcessID,
-                TimestampUtc:  data.TimeStamp.ToUniversalTime(),
+                Operation: "Create",
+                FileName: data.FileName ?? string.Empty,
+                ProcessId: data.ProcessID,
+                TimestampUtc: data.TimeStamp.ToUniversalTime(),
                 CreateOptions: unchecked((uint)data.CreateOptions));
             SweepPendingIfDue();
         };
@@ -279,10 +276,10 @@ public sealed class EnvironmentalCapture : IDisposable
         {
             if (!_tracker.IsTracked(data.ProcessID)) return;
             _pendingFileOps[unchecked((ulong)(long)data.IrpPtr)] = new PendingFileOp(
-                Operation:     "Delete",
-                FileName:      data.FileName ?? string.Empty,
-                ProcessId:     data.ProcessID,
-                TimestampUtc:  data.TimeStamp.ToUniversalTime(),
+                Operation: "Delete",
+                FileName: data.FileName ?? string.Empty,
+                ProcessId: data.ProcessID,
+                TimestampUtc: data.TimeStamp.ToUniversalTime(),
                 CreateOptions: 0);
             SweepPendingIfDue();
         };
@@ -295,17 +292,17 @@ public sealed class EnvironmentalCapture : IDisposable
             var image = _tracker.ImageNameFor(pending.ProcessId);
             _session.Append(new EnvironmentalAccess
             {
-                Kind         = AccessKind.File,
-                Target       = PathNormalizer.Normalize(pending.FileName),
-                Operation    = pending.Operation,
-                Result       = NtStatusName(data.NtStatus),
+                Kind = AccessKind.File,
+                Target = PathNormalizer.Normalize(pending.FileName),
+                Operation = pending.Operation,
+                Result = NtStatusName(data.NtStatus),
                 // CreateOptions deliberately NOT recorded in Detail: Detail
                 // participates in the aggregation/diff key, and apps open
                 // the same file with varying options across runs — keying
                 // on them turns identical file dependencies into spurious
                 // "not in baseline" rows.
-                Detail       = string.Empty,
-                ProcessId    = pending.ProcessId,
+                Detail = string.Empty,
+                ProcessId = pending.ProcessId,
                 ProcessImage = image,
                 TimestampUtc = pending.TimestampUtc,
             });
@@ -320,16 +317,16 @@ public sealed class EnvironmentalCapture : IDisposable
             if (!_tracker.IsTracked(data.ProcessID)) return;
             _session.Append(new EnvironmentalAccess
             {
-                Kind         = AccessKind.Network,
-                Target       = FormatEndpoint(data.daddr, data.dport),
-                Operation    = "Connect",
-                Result       = "SUCCESS",
+                Kind = AccessKind.Network,
+                Target = FormatEndpoint(data.daddr, data.dport),
+                Operation = "Connect",
+                Result = "SUCCESS",
                 // The source endpoint (ephemeral port!) must not go into
                 // Detail — Detail is part of the aggregation/diff key, and
                 // an ephemeral port makes every connection a unique row
                 // that can never match the baseline.
-                Detail       = string.Empty,
-                ProcessId    = data.ProcessID,
+                Detail = string.Empty,
+                ProcessId = data.ProcessID,
                 ProcessImage = _tracker.ImageNameFor(data.ProcessID),
                 TimestampUtc = data.TimeStamp.ToUniversalTime(),
             });
@@ -340,12 +337,12 @@ public sealed class EnvironmentalCapture : IDisposable
             if (!_tracker.IsTracked(data.ProcessID)) return;
             _session.Append(new EnvironmentalAccess
             {
-                Kind         = AccessKind.Network,
-                Target       = FormatEndpoint(data.daddr, data.dport),
-                Operation    = "Connect",
-                Result       = "SUCCESS",
-                Detail       = string.Empty,
-                ProcessId    = data.ProcessID,
+                Kind = AccessKind.Network,
+                Target = FormatEndpoint(data.daddr, data.dport),
+                Operation = "Connect",
+                Result = "SUCCESS",
+                Detail = string.Empty,
+                ProcessId = data.ProcessID,
                 ProcessImage = _tracker.ImageNameFor(data.ProcessID),
                 TimestampUtc = data.TimeStamp.ToUniversalTime(),
             });
@@ -364,12 +361,12 @@ public sealed class EnvironmentalCapture : IDisposable
             if (!tracked && data.ProcessID > 0) return; // some other app's failure
             _session.Append(new EnvironmentalAccess
             {
-                Kind         = AccessKind.Network,
-                Target       = "tcp-connect-failure",
-                Operation    = "ConnectFail",
-                Result       = $"FailureCode={data.FailureCode}",
-                Detail       = $"proto={data.Proto}",
-                ProcessId    = data.ProcessID,
+                Kind = AccessKind.Network,
+                Target = "tcp-connect-failure",
+                Operation = "ConnectFail",
+                Result = $"FailureCode={data.FailureCode}",
+                Detail = $"proto={data.Proto}",
+                ProcessId = data.ProcessID,
                 ProcessImage = tracked ? _tracker.ImageNameFor(data.ProcessID) : string.Empty,
                 TimestampUtc = data.TimeStamp.ToUniversalTime(),
             });
@@ -422,12 +419,12 @@ public sealed class EnvironmentalCapture : IDisposable
 
         _session.Append(new EnvironmentalAccess
         {
-            Kind         = AccessKind.Registry,
-            Target       = normalizedKey,
-            Operation    = op,
-            Result       = success ? "SUCCESS" : NtStatusName(status),
-            Detail       = valueName,
-            ProcessId    = data.ProcessID,
+            Kind = AccessKind.Registry,
+            Target = normalizedKey,
+            Operation = op,
+            Result = success ? "SUCCESS" : NtStatusName(status),
+            Detail = valueName,
+            ProcessId = data.ProcessID,
             ProcessImage = _tracker.ImageNameFor(data.ProcessID),
             TimestampUtc = data.TimeStamp.ToUniversalTime(),
         });
@@ -464,7 +461,7 @@ public sealed class EnvironmentalCapture : IDisposable
     private static string FormatEndpoint(IPAddress? addr, int port)
     {
         var s = addr?.ToString() ?? "?";
-        return s + ":" + port.ToString();
+        return s + ":" + port.ToString(CultureInfo.InvariantCulture);
     }
 
     private static string NtStatusName(int status)
@@ -472,7 +469,7 @@ public sealed class EnvironmentalCapture : IDisposable
         var u = unchecked((uint)status);
         return u switch
         {
-            0u          => "SUCCESS",
+            0u => "SUCCESS",
             0xC0000022u => "ACCESS_DENIED",
             0xC0000034u => "OBJECT_NAME_NOT_FOUND",
             0xC000003Au => "OBJECT_PATH_NOT_FOUND",

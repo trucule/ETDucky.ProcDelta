@@ -1,12 +1,9 @@
-using System;
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.Win32;
 
 namespace ETDucky.ProcDelta.Services;
@@ -98,6 +95,22 @@ public sealed class RegistryValueCache : IDisposable
     {
         try { _cts.Cancel(); } catch { }
         try { _signal.Release(); } catch { }
+
+        // Observe the worker. It was started with Task.Run into a field nothing ever
+        // read, so a fault inside WorkerLoopAsync was captured into the Task and
+        // discarded: registry reads would stop happening and the only symptom would be
+        // values quietly never appearing in the cache. Waiting here both drains the
+        // shutdown and surfaces the exception. Bounded — shutdown must not hang on it.
+        var stopped = false;
+        try { stopped = _worker.Wait(TimeSpan.FromSeconds(2)); }
+        catch (AggregateException) { stopped = true; /* faulted or cancelled — observed */ }
+        catch (Exception) { }
+
+        if (stopped)
+        {
+            _cts.Dispose();
+            _signal.Dispose();
+        }
     }
 
     private async Task WorkerLoopAsync()
@@ -190,13 +203,13 @@ public sealed class RegistryValueCache : IDisposable
     {
         return kind switch
         {
-            RegistryValueKind.String       => Encoding.UTF8.GetBytes((string)value),
+            RegistryValueKind.String => Encoding.UTF8.GetBytes((string)value),
             RegistryValueKind.ExpandString => Encoding.UTF8.GetBytes((string)value),
-            RegistryValueKind.MultiString  => Encoding.UTF8.GetBytes(string.Join("\0", (string[])value)),
-            RegistryValueKind.DWord        => BitConverter.GetBytes(Convert.ToInt32(value, CultureInfo.InvariantCulture)),
-            RegistryValueKind.QWord        => BitConverter.GetBytes(Convert.ToInt64(value, CultureInfo.InvariantCulture)),
-            RegistryValueKind.Binary       => (byte[])value,
-            _                              => null,
+            RegistryValueKind.MultiString => Encoding.UTF8.GetBytes(string.Join("\0", (string[])value)),
+            RegistryValueKind.DWord => BitConverter.GetBytes(Convert.ToInt32(value, CultureInfo.InvariantCulture)),
+            RegistryValueKind.QWord => BitConverter.GetBytes(Convert.ToInt64(value, CultureInfo.InvariantCulture)),
+            RegistryValueKind.Binary => (byte[])value,
+            _ => null,
         };
     }
 
@@ -212,7 +225,7 @@ public sealed class RegistryValueCache : IDisposable
 
         var p = fullPath
             .Replace("\\REGISTRY\\MACHINE", "HKEY_LOCAL_MACHINE", StringComparison.OrdinalIgnoreCase)
-            .Replace("\\REGISTRY\\USER",    "HKEY_USERS",         StringComparison.OrdinalIgnoreCase);
+            .Replace("\\REGISTRY\\USER", "HKEY_USERS", StringComparison.OrdinalIgnoreCase);
 
         var currentSid = System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value;
         if (currentSid is not null)
@@ -229,10 +242,10 @@ public sealed class RegistryValueCache : IDisposable
 
         RegistryKey? root = hiveName.ToUpperInvariant() switch
         {
-            "HKEY_LOCAL_MACHINE"  => Registry.LocalMachine,
-            "HKEY_CURRENT_USER"   => Registry.CurrentUser,
-            "HKEY_USERS"          => Registry.Users,
-            "HKEY_CLASSES_ROOT"   => Registry.ClassesRoot,
+            "HKEY_LOCAL_MACHINE" => Registry.LocalMachine,
+            "HKEY_CURRENT_USER" => Registry.CurrentUser,
+            "HKEY_USERS" => Registry.Users,
+            "HKEY_CLASSES_ROOT" => Registry.ClassesRoot,
             "HKEY_CURRENT_CONFIG" => Registry.CurrentConfig,
             _ => null,
         };

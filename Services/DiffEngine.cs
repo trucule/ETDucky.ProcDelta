@@ -1,10 +1,7 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Runtime.Versioning;
 using System.Text;
-using System.Threading.Tasks;
 using ETDucky.ProcDelta.Models;
+using System.Globalization;
 
 namespace ETDucky.ProcDelta.Services;
 
@@ -63,13 +60,13 @@ public static class DiffEngine
             pending.Add(new PendingCandidate
             {
                 Classification = classification.Value,
-                Kind           = live.Kind,
-                Target         = live.Target,
-                Operation      = live.Operation,
-                Detail         = live.Detail,
+                Kind = live.Kind,
+                Target = live.Target,
+                Operation = live.Operation,
+                Detail = live.Detail,
                 BaselineResult = baselineEntry?.Result ?? "(not in baseline)",
-                CaptureResult  = live.LastResult,
-                NearExit       = (lastActivity - live.LastTimestampUtc) <= nearExitWindow,
+                CaptureResult = live.LastResult,
+                NearExit = (lastActivity - live.LastTimestampUtc) <= nearExitWindow,
             });
         }
 
@@ -88,13 +85,13 @@ public static class DiffEngine
             pending.Add(new PendingCandidate
             {
                 Classification = DiagnosisReport.Classification.MissingDependency,
-                Kind           = e.Kind,
-                Target         = e.Target,
-                Operation      = e.Operation,
-                Detail         = e.Detail,
+                Kind = e.Kind,
+                Target = e.Target,
+                Operation = e.Operation,
+                Detail = e.Detail,
                 BaselineResult = e.Result,
-                CaptureResult  = "(not observed in this run)",
-                NearExit       = false,
+                CaptureResult = "(not observed in this run)",
+                NearExit = false,
             });
         }
 
@@ -115,16 +112,16 @@ public static class DiffEngine
             var p = pending[i];
             candidates.Add(new DiagnosisReport.Candidate
             {
-                Severity       = SeverityFor(p.Classification),
+                Severity = SeverityFor(p.Classification),
                 Classification = p.Classification,
-                Kind           = p.Kind,
-                Target         = p.Target,
-                Operation      = p.Operation,
-                Detail         = p.Detail,
+                Kind = p.Kind,
+                Target = p.Target,
+                Operation = p.Operation,
+                Detail = p.Detail,
                 BaselineResult = p.BaselineResult,
-                CaptureResult  = p.CaptureResult,
-                LiveState      = liveStates[i],
-                NearExit       = p.NearExit,
+                CaptureResult = p.CaptureResult,
+                LiveState = liveStates[i],
+                NearExit = p.NearExit,
             });
         }
 
@@ -136,14 +133,14 @@ public static class DiffEngine
 
         return new DiagnosisReport
         {
-            BaselineSource     = baselineSource,
-            AppName            = baseline.AppName,
-            ProcessPattern     = baseline.ProcessPattern,
-            CaptureHost        = Environment.MachineName,
-            BaselineHost       = baseline.RecordedOn,
-            CaptureDuration    = capture.Duration,
+            BaselineSource = baselineSource,
+            AppName = baseline.AppName,
+            ProcessPattern = baseline.ProcessPattern,
+            CaptureHost = Environment.MachineName,
+            BaselineHost = baseline.RecordedOn,
+            CaptureDuration = capture.Duration,
             CaptureAccessCount = liveAggregates.Count,
-            Candidates         = ordered,
+            Candidates = ordered,
         };
     }
 
@@ -160,7 +157,7 @@ public static class DiffEngine
 
     private static string Render(DiagnosisReport report, bool plain)
     {
-        string B(string s)    => plain ? s : $"**{s}**";
+        string B(string s) => plain ? s : $"**{s}**";
         string Code(string s) => plain ? s : $"`{s}`";
 
         var sb = new StringBuilder();
@@ -172,14 +169,14 @@ public static class DiffEngine
         }
         else
         {
-            sb.AppendLine($"# {title}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"# {title}");
         }
         sb.AppendLine();
-        sb.AppendLine($"- {B("Process pattern:")} {Code(report.ProcessPattern)}");
-        sb.AppendLine($"- {B("Generated:")} {report.GeneratedAtUtc:yyyy-MM-dd HH:mm:ss} UTC");
-        sb.AppendLine($"- {B("Capture host:")} {report.CaptureHost}  ·  {B("Baseline host:")} {report.BaselineHost}");
-        sb.AppendLine($"- {B("Baseline source:")} {Code(report.BaselineSource)}");
-        sb.AppendLine($"- {B("Capture duration:")} {report.CaptureDuration.TotalSeconds:0.0}s, {report.CaptureAccessCount} distinct accesses observed");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("Process pattern:")} {Code(report.ProcessPattern)}");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("Generated:")} {report.GeneratedAtUtc:yyyy-MM-dd HH:mm:ss} UTC");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("Capture host:")} {report.CaptureHost}  ·  {B("Baseline host:")} {report.BaselineHost}");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("Baseline source:")} {Code(report.BaselineSource)}");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("Capture duration:")} {report.CaptureDuration.TotalSeconds:0.0}s, {report.CaptureAccessCount} distinct accesses observed");
         sb.AppendLine();
 
         if (report.Candidates.Count == 0)
@@ -202,7 +199,7 @@ public static class DiffEngine
             }
             else
             {
-                sb.AppendLine($"## {heading}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"## {heading}");
             }
             sb.AppendLine();
             int idx = 1;
@@ -215,10 +212,10 @@ public static class DiffEngine
                         ? "   Fired within 2 seconds of the tracked process tree's final activity (strong causal signal)."
                         : "*Fired within 2 seconds of the tracked process tree's final activity (strong causal signal).*");
                 sb.AppendLine();
-                sb.AppendLine($"- {B("Operation:")} {c.Operation}{(string.IsNullOrEmpty(c.Detail) ? "" : "  ·  detail: " + Code(c.Detail))}");
-                sb.AppendLine($"- {B("Baseline observed:")} {Code(c.BaselineResult)}");
-                sb.AppendLine($"- {B("This run observed:")} {Code(c.CaptureResult)}");
-                sb.AppendLine($"- {B("Live state now:")} {c.LiveState}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("Operation:")} {c.Operation}{(string.IsNullOrEmpty(c.Detail) ? "" : "  ·  detail: " + Code(c.Detail))}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("Baseline observed:")} {Code(c.BaselineResult)}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("This run observed:")} {Code(c.CaptureResult)}");
+                sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("Live state now:")} {c.LiveState}");
                 sb.AppendLine();
                 idx++;
             }
@@ -272,21 +269,21 @@ public static class DiffEngine
     private static DiagnosisReport.Severity SeverityFor(DiagnosisReport.Classification cls)
         => cls switch
         {
-            DiagnosisReport.Classification.Regression         => DiagnosisReport.Severity.High,
-            DiagnosisReport.Classification.MissingDependency  => DiagnosisReport.Severity.Medium,
-            DiagnosisReport.Classification.ValueDrift         => DiagnosisReport.Severity.Medium,
-            DiagnosisReport.Classification.NovelFailure       => DiagnosisReport.Severity.Low,
-            _                                                 => DiagnosisReport.Severity.Info,
+            DiagnosisReport.Classification.Regression => DiagnosisReport.Severity.High,
+            DiagnosisReport.Classification.MissingDependency => DiagnosisReport.Severity.Medium,
+            DiagnosisReport.Classification.ValueDrift => DiagnosisReport.Severity.Medium,
+            DiagnosisReport.Classification.NovelFailure => DiagnosisReport.Severity.Low,
+            _ => DiagnosisReport.Severity.Info,
         };
 
     private static string ClassificationLabel(DiagnosisReport.Classification cls)
         => cls switch
         {
-            DiagnosisReport.Classification.Regression         => "Regression vs baseline",
-            DiagnosisReport.Classification.MissingDependency  => "Missing dependency",
-            DiagnosisReport.Classification.ValueDrift         => "Value drift",
-            DiagnosisReport.Classification.NovelFailure       => "Novel failure (not in baseline)",
-            _                                                 => cls.ToString(),
+            DiagnosisReport.Classification.Regression => "Regression vs baseline",
+            DiagnosisReport.Classification.MissingDependency => "Missing dependency",
+            DiagnosisReport.Classification.ValueDrift => "Value drift",
+            DiagnosisReport.Classification.NovelFailure => "Novel failure (not in baseline)",
+            _ => cls.ToString(),
         };
 
     private static string Truncate(string s, int n)

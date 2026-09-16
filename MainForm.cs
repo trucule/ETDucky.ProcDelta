@@ -1,11 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Drawing;
-using System.IO;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
-using System.Windows.Forms;
 using ETDucky.ProcDelta.Models;
 using ETDucky.ProcDelta.Services;
 
@@ -22,17 +14,17 @@ namespace ETDucky.ProcDelta;
 public sealed class MainForm : Form
 {
     // ── Palette (matches ProviderExplorer for visual family coherence) ──
-    private static readonly Color BgPage      = Color.FromArgb(18, 18, 24);
-    private static readonly Color BgCard      = Color.FromArgb(30, 30, 42);
-    private static readonly Color BgInput     = Color.FromArgb(26, 26, 38);
-    private static readonly Color Accent      = Color.FromArgb(0, 180, 219);
-    private static readonly Color Subtle      = Color.FromArgb(50, 50, 65);
+    private static readonly Color BgPage = Color.FromArgb(18, 18, 24);
+    private static readonly Color BgCard = Color.FromArgb(30, 30, 42);
+    private static readonly Color BgInput = Color.FromArgb(26, 26, 38);
+    private static readonly Color Accent = Color.FromArgb(0, 180, 219);
+    private static readonly Color Subtle = Color.FromArgb(50, 50, 65);
     private static readonly Color TextPrimary = Color.FromArgb(220, 220, 230);
-    private static readonly Color TextMuted   = Color.FromArgb(120, 120, 140);
-    private static readonly Color Border      = Color.FromArgb(40, 40, 55);
-    private static readonly Color Success     = Color.FromArgb(34, 197, 94);
-    private static readonly Color Warning     = Color.FromArgb(217, 140, 0);
-    private static readonly Color Danger      = Color.FromArgb(239, 68, 68);
+    private static readonly Color TextMuted = Color.FromArgb(120, 120, 140);
+    private static readonly Color Border = Color.FromArgb(40, 40, 55);
+    private static readonly Color Success = Color.FromArgb(34, 197, 94);
+    private static readonly Color Warning = Color.FromArgb(217, 140, 0);
+    private static readonly Color Danger = Color.FromArgb(239, 68, 68);
 
     private readonly TabControl _tabs;
 
@@ -48,7 +40,7 @@ public sealed class MainForm : Form
     private CaptureMode _mode = CaptureMode.None;
     private ProcessTracker? _tracker;
     private EnvironmentalCapture? _capture;
-    private AppRuntimeCapture?    _appCapture;
+    private AppRuntimeCapture? _appCapture;
     private CaptureSession? _session;       // the session of the running (or last) capture
     private CaptureSession? _recSession;    // last Record-mode session
     private CaptureSession? _cmpSession;    // last Compare-mode session
@@ -57,13 +49,13 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
-        Text          = "ET Ducky ProcDelta";
-        ClientSize    = new Size(1200, 720);
-        MinimumSize   = new Size(900, 560);
+        Text = "ET Ducky ProcDelta";
+        ClientSize = new Size(1200, 720);
+        MinimumSize = new Size(900, 560);
         StartPosition = FormStartPosition.CenterScreen;
-        BackColor     = BgPage;
-        ForeColor     = TextPrimary;
-        Font          = new Font("Segoe UI", 9f);
+        BackColor = BgPage;
+        ForeColor = TextPrimary;
+        Font = new Font("Segoe UI", 9f);
 
         // Reclaim kernel-session slots stranded by a previous crashed run
         // (sessions survive process death; names are randomised per start,
@@ -87,9 +79,9 @@ public sealed class MainForm : Form
 
         _tabs = new TabControl
         {
-            Dock       = DockStyle.Fill,
+            Dock = DockStyle.Fill,
             Appearance = TabAppearance.Normal,
-            SizeMode   = TabSizeMode.Normal,
+            SizeMode = TabSizeMode.Normal,
         };
         _tabs.TabPages.Add(BuildRecordTab());
         _tabs.TabPages.Add(BuildCompareTab());
@@ -100,7 +92,7 @@ public sealed class MainForm : Form
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         base.OnFormClosing(e);
-        try { _capture?.Dispose(); }    catch { }
+        try { _capture?.Dispose(); } catch { }
         try { _appCapture?.Dispose(); } catch { }
         try { _statusTimer?.Stop(); _statusTimer?.Dispose(); } catch { }
     }
@@ -112,10 +104,10 @@ public sealed class MainForm : Form
     private TextBox? _recPattern;
     private TextBox? _recAppName;
     private TextBox? _recDescription;
-    private Button?  _recStartBtn;
-    private Button?  _recStopBtn;
-    private Button?  _recSaveBtn;
-    private Label?   _recStatus;
+    private Button? _recStartBtn;
+    private Button? _recStopBtn;
+    private Button? _recSaveBtn;
+    private Label? _recStatus;
     private ListBox? _recLiveList;
 
     private TabPage BuildRecordTab()
@@ -124,24 +116,24 @@ public sealed class MainForm : Form
 
         var root = new TableLayoutPanel
         {
-            Dock        = DockStyle.Fill,
+            Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount    = 3,
-            BackColor   = BgPage,
-            Padding     = new Padding(8),
+            RowCount = 3,
+            BackColor = BgPage,
+            Padding = new Padding(8),
         };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 200));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent,  100));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         // ── Control panel ──
         var ctrl = new TableLayoutPanel
         {
-            Dock        = DockStyle.Fill,
+            Dock = DockStyle.Fill,
             ColumnCount = 4,
-            RowCount    = 5,
-            BackColor   = BgCard,
-            Padding     = new Padding(10),
+            RowCount = 5,
+            BackColor = BgCard,
+            Padding = new Padding(10),
         };
         ctrl.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
         ctrl.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -174,10 +166,10 @@ public sealed class MainForm : Form
 
         _recStatus = new Label
         {
-            Dock      = DockStyle.Fill,
+            Dock = DockStyle.Fill,
             ForeColor = TextMuted,
             TextAlign = ContentAlignment.MiddleLeft,
-            Text      = "Type a process name and click Start. The tool will watch for matching processes to spawn and record everything they touch.",
+            Text = "Type a process name and click Start. The tool will watch for matching processes to spawn and record everything they touch.",
         };
         ctrl.SetColumnSpan(_recStatus, 4);
         ctrl.Controls.Add(_recStatus, 0, 3);
@@ -197,31 +189,31 @@ public sealed class MainForm : Form
         // ── Live access list (tail of the capture) ──
         var listPanel = new TableLayoutPanel
         {
-            Dock        = DockStyle.Fill,
+            Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount    = 2,
-            BackColor   = BgCard,
+            RowCount = 2,
+            BackColor = BgCard,
         };
         listPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
-        listPanel.RowStyles.Add(new RowStyle(SizeType.Percent,  100));
+        listPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         listPanel.Controls.Add(new Label
         {
-            Text      = "LIVE ACCESSES (tail)",
-            Dock      = DockStyle.Fill,
+            Text = "LIVE ACCESSES (tail)",
+            Dock = DockStyle.Fill,
             ForeColor = TextMuted,
-            Font      = new Font("Segoe UI", 8f, FontStyle.Bold),
+            Font = new Font("Segoe UI", 8f, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleLeft,
-            Padding   = new Padding(10, 0, 0, 0),
+            Padding = new Padding(10, 0, 0, 0),
         }, 0, 0);
 
         _recLiveList = new ListBox
         {
-            Dock        = DockStyle.Fill,
-            BackColor   = BgPage,
-            ForeColor   = TextPrimary,
+            Dock = DockStyle.Fill,
+            BackColor = BgPage,
+            ForeColor = TextPrimary,
             BorderStyle = BorderStyle.None,
-            Font        = new Font("Consolas", 9f),
+            Font = new Font("Consolas", 9f),
             IntegralHeight = false,
         };
         listPanel.Controls.Add(_recLiveList, 0, 1);
@@ -254,7 +246,7 @@ public sealed class MainForm : Form
         if (!StartCapture(pattern, _recDescription.Text.Trim(), CaptureMode.Record)) return;
 
         _recSession = _session;
-        _recValues  = _capture?.RegistryValues;
+        _recValues = _capture?.RegistryValues;
 
         SetRecordControlsRunning(true);
         StartStatusTimer();
@@ -272,7 +264,7 @@ public sealed class MainForm : Form
             _tracker = new ProcessTracker(pattern);
             _session = new CaptureSession
             {
-                ProcessPattern    = pattern,
+                ProcessPattern = pattern,
                 ActionDescription = actionDescription,
             };
             _capture = new EnvironmentalCapture(_tracker, _session);
@@ -371,7 +363,7 @@ public sealed class MainForm : Form
         var stoppedMode = _mode;
         _mode = CaptureMode.None;
 
-        try { await _capture.StopAsync(); }    catch { }
+        try { await _capture.StopAsync(); } catch { }
         try { if (_appCapture is not null) await _appCapture.StopAsync(); } catch { }
         _appCapture = null;
         StopStatusTimer();
@@ -381,7 +373,7 @@ public sealed class MainForm : Form
 
         // Enable the follow-up action for the mode that OWNED the capture
         // (not whichever tab happens to be selected).
-        if (stoppedMode == CaptureMode.Record  && _recSaveBtn != null) _recSaveBtn.Enabled = true;
+        if (stoppedMode == CaptureMode.Record && _recSaveBtn != null) _recSaveBtn.Enabled = true;
         if (stoppedMode == CaptureMode.Compare && _cmpDiffBtn != null) _cmpDiffBtn.Enabled = true;
 
         // Surface dropped events — a lossy capture means an incomplete
@@ -402,10 +394,10 @@ public sealed class MainForm : Form
     private void SetRecordControlsRunning(bool running)
     {
         if (_recStartBtn != null) _recStartBtn.Enabled = !running;
-        if (_recStopBtn  != null) _recStopBtn.Enabled  = running;
-        if (_recPattern  != null) _recPattern.Enabled  = !running;
-        if (_recAppName  != null) _recAppName.Enabled  = !running;
-        if (_recSaveBtn  != null) _recSaveBtn.Enabled  = false;
+        if (_recStopBtn != null) _recStopBtn.Enabled = running;
+        if (_recPattern != null) _recPattern.Enabled = !running;
+        if (_recAppName != null) _recAppName.Enabled = !running;
+        if (_recSaveBtn != null) _recSaveBtn.Enabled = false;
         // Only one capture may run at a time — lock out the other tab's Start.
         if (_cmpStartBtn != null) _cmpStartBtn.Enabled = !running && _loadedBaseline != null;
     }
@@ -429,9 +421,9 @@ public sealed class MainForm : Form
 
         using var dlg = new SaveFileDialog
         {
-            Title      = "Save baseline",
-            Filter     = "ProcDelta baseline (*.baseline.json)|*.baseline.json|JSON (*.json)|*.json",
-            FileName   = SafeFilename(baseline.AppName) + ".baseline.json",
+            Title = "Save baseline",
+            Filter = "ProcDelta baseline (*.baseline.json)|*.baseline.json|JSON (*.json)|*.json",
+            FileName = SafeFilename(baseline.AppName) + ".baseline.json",
         };
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
 
@@ -456,13 +448,13 @@ public sealed class MainForm : Form
     // =========================================================================
 
     private TextBox? _cmpBaselinePath;
-    private Label?   _cmpBaselineSummary;
+    private Label? _cmpBaselineSummary;
     private TextBox? _cmpPattern;
-    private Button?  _cmpStartBtn;
-    private Button?  _cmpStopBtn;
-    private Button?  _cmpDiffBtn;
-    private Button?  _cmpExportBtn;
-    private Label?   _cmpStatus;
+    private Button? _cmpStartBtn;
+    private Button? _cmpStopBtn;
+    private Button? _cmpDiffBtn;
+    private Button? _cmpExportBtn;
+    private Label? _cmpStatus;
     private RichTextBox? _cmpReport;
     private Baseline? _loadedBaseline;
     private DiagnosisReport? _lastReport;
@@ -473,24 +465,24 @@ public sealed class MainForm : Form
 
         var root = new TableLayoutPanel
         {
-            Dock        = DockStyle.Fill,
+            Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount    = 3,
-            BackColor   = BgPage,
-            Padding     = new Padding(8),
+            RowCount = 3,
+            BackColor = BgPage,
+            Padding = new Padding(8),
         };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 200));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent,  100));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         // ── Control panel ──
         var ctrl = new TableLayoutPanel
         {
-            Dock        = DockStyle.Fill,
+            Dock = DockStyle.Fill,
             ColumnCount = 4,
-            RowCount    = 5,
-            BackColor   = BgCard,
-            Padding     = new Padding(10),
+            RowCount = 5,
+            BackColor = BgCard,
+            Padding = new Padding(10),
         };
         ctrl.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
         ctrl.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -510,10 +502,10 @@ public sealed class MainForm : Form
 
         _cmpBaselineSummary = new Label
         {
-            Dock      = DockStyle.Fill,
+            Dock = DockStyle.Fill,
             ForeColor = TextMuted,
             TextAlign = ContentAlignment.MiddleLeft,
-            Text      = "No baseline loaded.",
+            Text = "No baseline loaded.",
         };
         ctrl.SetColumnSpan(_cmpBaselineSummary, 4);
         ctrl.Controls.Add(_cmpBaselineSummary, 0, 1);
@@ -534,10 +526,10 @@ public sealed class MainForm : Form
 
         _cmpStatus = new Label
         {
-            Dock      = DockStyle.Fill,
+            Dock = DockStyle.Fill,
             ForeColor = TextMuted,
             TextAlign = ContentAlignment.MiddleLeft,
-            Text      = "Load a baseline, then have the user perform the same action while you click Start → Stop.",
+            Text = "Load a baseline, then have the user perform the same action while you click Start → Stop.",
         };
         ctrl.SetColumnSpan(_cmpStatus, 4);
         ctrl.Controls.Add(_cmpStatus, 0, 3);
@@ -561,33 +553,33 @@ public sealed class MainForm : Form
 
         var reportPanel = new TableLayoutPanel
         {
-            Dock        = DockStyle.Fill,
+            Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount    = 2,
-            BackColor   = BgCard,
+            RowCount = 2,
+            BackColor = BgCard,
         };
         reportPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
-        reportPanel.RowStyles.Add(new RowStyle(SizeType.Percent,  100));
+        reportPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         reportPanel.Controls.Add(new Label
         {
-            Text      = "DIAGNOSIS REPORT",
-            Dock      = DockStyle.Fill,
+            Text = "DIAGNOSIS REPORT",
+            Dock = DockStyle.Fill,
             ForeColor = TextMuted,
-            Font      = new Font("Segoe UI", 8f, FontStyle.Bold),
+            Font = new Font("Segoe UI", 8f, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleLeft,
-            Padding   = new Padding(10, 0, 0, 0),
+            Padding = new Padding(10, 0, 0, 0),
         }, 0, 0);
 
         _cmpReport = new RichTextBox
         {
-            Dock        = DockStyle.Fill,
-            ReadOnly    = true,
-            BackColor   = BgCard,
-            ForeColor   = TextPrimary,
+            Dock = DockStyle.Fill,
+            ReadOnly = true,
+            BackColor = BgCard,
+            ForeColor = TextPrimary,
             BorderStyle = BorderStyle.None,
-            Font        = new Font("Consolas", 9f),
-            Text        = "Run a diff to populate this panel.",
+            Font = new Font("Consolas", 9f),
+            Text = "Run a diff to populate this panel.",
         };
         reportPanel.Controls.Add(_cmpReport, 0, 1);
 
@@ -603,7 +595,7 @@ public sealed class MainForm : Form
 
         using var dlg = new OpenFileDialog
         {
-            Title  = "Load baseline",
+            Title = "Load baseline",
             Filter = "ProcDelta baseline (*.baseline.json)|*.baseline.json|JSON (*.json)|*.json|All (*.*)|*.*",
         };
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
@@ -655,12 +647,12 @@ public sealed class MainForm : Form
 
     private void SetCompareControlsRunning(bool running)
     {
-        if (_cmpStartBtn   != null) _cmpStartBtn.Enabled   = !running && _loadedBaseline != null;
-        if (_cmpStopBtn    != null) _cmpStopBtn.Enabled    = running;
-        if (_cmpDiffBtn    != null) _cmpDiffBtn.Enabled    = false;
-        if (_cmpExportBtn  != null) _cmpExportBtn.Enabled  = false;
+        if (_cmpStartBtn != null) _cmpStartBtn.Enabled = !running && _loadedBaseline != null;
+        if (_cmpStopBtn != null) _cmpStopBtn.Enabled = running;
+        if (_cmpDiffBtn != null) _cmpDiffBtn.Enabled = false;
+        if (_cmpExportBtn != null) _cmpExportBtn.Enabled = false;
         // Only one capture may run at a time — lock out the other tab's Start.
-        if (_recStartBtn   != null) _recStartBtn.Enabled   = !running;
+        if (_recStartBtn != null) _recStartBtn.Enabled = !running;
     }
 
     private async Task RunDiffAsync()
@@ -670,12 +662,12 @@ public sealed class MainForm : Form
         // The diff re-reads registry values, walks ACLs and TCP-probes
         // unreachable hosts (3s timeout each) — run it off the UI thread
         // so the window never freezes, even on candidate-heavy reports.
-        var baseline     = _loadedBaseline;
-        var session      = _cmpSession;
+        var baseline = _loadedBaseline;
+        var session = _cmpSession;
         var baselinePath = _cmpBaselinePath.Text;
 
         if (_cmpDiffBtn != null) _cmpDiffBtn.Enabled = false;
-        if (_cmpStatus  != null)
+        if (_cmpStatus != null)
         {
             _cmpStatus.ForeColor = TextMuted;
             _cmpStatus.Text = "Running diff (probing live state)…";
@@ -698,9 +690,9 @@ public sealed class MainForm : Form
 
         _cmpReport.Text = DiffEngine.RenderPlainText(_lastReport);
 
-        if (_cmpDiffBtn   != null) _cmpDiffBtn.Enabled   = true;
+        if (_cmpDiffBtn != null) _cmpDiffBtn.Enabled = true;
         if (_cmpExportBtn != null) _cmpExportBtn.Enabled = true;
-        if (_cmpStatus    != null)
+        if (_cmpStatus != null)
         {
             var n = _lastReport.Candidates.Count;
             _cmpStatus.ForeColor = n == 0 ? Success : Warning;
@@ -715,8 +707,8 @@ public sealed class MainForm : Form
         if (_lastReport is null) return;
         using var dlg = new SaveFileDialog
         {
-            Title    = "Export diagnosis report",
-            Filter   = "Markdown (*.md)|*.md|Text (*.txt)|*.txt",
+            Title = "Export diagnosis report",
+            Filter = "Markdown (*.md)|*.md|Text (*.txt)|*.txt",
             FileName = $"{SafeFilename(_lastReport.AppName)}-diagnosis-{DateTime.Now:yyyyMMdd-HHmmss}.md",
         };
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
@@ -738,20 +730,20 @@ public sealed class MainForm : Form
     // TAB 3 — HELP
     // =========================================================================
 
-    private TabPage BuildHelpTab()
+    private static TabPage BuildHelpTab()
     {
         var page = new TabPage("Help") { BackColor = BgPage };
         var textBox = new TextBox
         {
-            Dock        = DockStyle.Fill,
-            Multiline   = true,
-            ReadOnly    = true,
-            ScrollBars  = ScrollBars.Vertical,
-            BackColor   = BgPage,
-            ForeColor   = TextPrimary,
+            Dock = DockStyle.Fill,
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Vertical,
+            BackColor = BgPage,
+            ForeColor = TextPrimary,
             BorderStyle = BorderStyle.None,
-            Font        = new Font("Consolas", 9.5f),
-            WordWrap    = true,
+            Font = new Font("Consolas", 9.5f),
+            WordWrap = true,
         };
 
         var sb = new System.Text.StringBuilder();
@@ -879,9 +871,9 @@ public sealed class MainForm : Form
         if (_session is null || _tracker is null) return;
 
         var trackedNow = _tracker.TrackedCount;
-        var totalSeen  = _session.MatchedPidCount;
-        var elapsed    = _session.Duration;
-        var rows       = _session.TotalEventCount;
+        var totalSeen = _session.MatchedPidCount;
+        var elapsed = _session.Duration;
+        var rows = _session.TotalEventCount;
 
         var msg = $"Running for {elapsed.TotalSeconds:0.0}s. Tracked PIDs: {trackedNow} now, {totalSeen} seen total. {rows:N0} accesses captured.";
         if (totalSeen == 0)
@@ -911,8 +903,8 @@ public sealed class MainForm : Form
     private static string FormatLiveRow(EnvironmentalAccess a)
     {
         var kind = a.Kind.ToString().PadRight(8);
-        var op   = a.Operation.PadRight(12);
-        var res  = a.Result.PadRight(22);
+        var op = a.Operation.PadRight(12);
+        var res = a.Result.PadRight(22);
         return $"{a.TimestampUtc:HH:mm:ss.fff}  {kind} {op} {res} {a.Target}";
     }
 
@@ -922,19 +914,19 @@ public sealed class MainForm : Form
 
     private static Label NewMutedLabel(string text) => new()
     {
-        Text      = text,
+        Text = text,
         ForeColor = TextMuted,
         TextAlign = ContentAlignment.MiddleLeft,
-        Dock      = DockStyle.Fill,
+        Dock = DockStyle.Fill,
     };
 
     private static TextBox NewTextBox(string placeholder) => new()
     {
-        Dock            = DockStyle.Fill,
-        BackColor       = BgInput,
-        ForeColor       = TextPrimary,
-        BorderStyle     = BorderStyle.FixedSingle,
-        Font            = new Font("Consolas", 9f),
+        Dock = DockStyle.Fill,
+        BackColor = BgInput,
+        ForeColor = TextPrimary,
+        BorderStyle = BorderStyle.FixedSingle,
+        Font = new Font("Consolas", 9f),
         PlaceholderText = placeholder,
     };
 
@@ -942,14 +934,14 @@ public sealed class MainForm : Form
     {
         var b = new Button
         {
-            Text      = text,
-            Dock      = DockStyle.Fill,
-            Height    = 28,
-            Margin    = new Padding(4),
+            Text = text,
+            Dock = DockStyle.Fill,
+            Height = 28,
+            Margin = new Padding(4),
             BackColor = primary ? Accent : Subtle,
             ForeColor = primary ? Color.White : TextPrimary,
             FlatStyle = FlatStyle.Flat,
-            Font      = new Font("Segoe UI", 9f),
+            Font = new Font("Segoe UI", 9f),
         };
         b.FlatAppearance.BorderSize = 0;
         return b;

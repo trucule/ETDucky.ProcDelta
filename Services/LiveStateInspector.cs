@@ -1,5 +1,3 @@
-using System;
-using System.IO;
 using System.Net.Sockets;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
@@ -48,10 +46,10 @@ public static class LiveStateInspector
             return kind switch
             {
                 AccessKind.Registry => InspectRegistry(target, detail),
-                AccessKind.File     => InspectFile(PathNormalizer.Expand(target)),
-                AccessKind.Network  => InspectNetwork(target),
-                AccessKind.Process  => InspectProcessImage(PathNormalizer.Expand(target)),
-                _                   => "(live inspection not available for this access kind)",
+                AccessKind.File => InspectFile(PathNormalizer.Expand(target)),
+                AccessKind.Network => InspectNetwork(target),
+                AccessKind.Process => InspectProcessImage(PathNormalizer.Expand(target)),
+                _ => "(live inspection not available for this access kind)",
             };
         }
         catch (Exception ex)
@@ -101,7 +99,7 @@ public static class LiveStateInspector
     {
         return kind switch
         {
-            RegistryValueKind.Binary    => $"<{((byte[])value).Length} bytes of binary>",
+            RegistryValueKind.Binary => $"<{((byte[])value).Length} bytes of binary>",
             RegistryValueKind.MultiString => "[" + string.Join(", ", (string[])value) + "]",
             _ => Truncate(value.ToString() ?? "<null>", 120),
         };
@@ -115,7 +113,7 @@ public static class LiveStateInspector
         // (PathNormalizer.NormalizeRegistry), but keep the native-path
         // translation for legacy baselines that carry \REGISTRY\… paths.
         var p = fullPath.Replace("\\REGISTRY\\MACHINE", "HKEY_LOCAL_MACHINE", StringComparison.OrdinalIgnoreCase)
-                        .Replace("\\REGISTRY\\USER",    "HKEY_USERS",         StringComparison.OrdinalIgnoreCase);
+                        .Replace("\\REGISTRY\\USER", "HKEY_USERS", StringComparison.OrdinalIgnoreCase);
 
         // Map well-known SID under HKEY_USERS to HKEY_CURRENT_USER when it
         // matches the current process's identity.
@@ -137,10 +135,10 @@ public static class LiveStateInspector
 
         RegistryKey? root = hiveName.ToUpperInvariant() switch
         {
-            "HKEY_LOCAL_MACHINE"  => Registry.LocalMachine,
-            "HKEY_CURRENT_USER"   => Registry.CurrentUser,
-            "HKEY_USERS"          => Registry.Users,
-            "HKEY_CLASSES_ROOT"   => Registry.ClassesRoot,
+            "HKEY_LOCAL_MACHINE" => Registry.LocalMachine,
+            "HKEY_CURRENT_USER" => Registry.CurrentUser,
+            "HKEY_USERS" => Registry.Users,
+            "HKEY_CLASSES_ROOT" => Registry.ClassesRoot,
             "HKEY_CURRENT_CONFIG" => Registry.CurrentConfig,
             _ => null,
         };

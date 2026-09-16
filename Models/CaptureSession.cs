@@ -1,6 +1,3 @@
-using System;
-using System.Collections.Generic;
-
 namespace ETDucky.ProcDelta.Models;
 
 /// <summary>
@@ -70,7 +67,7 @@ public sealed class CaptureSession
         {
             if (_aggregates.TryGetValue(key, out var agg))
             {
-                agg.LastResult       = access.Result;
+                agg.LastResult = access.Result;
                 agg.LastTimestampUtc = access.TimestampUtc;
                 agg.Count++;
             }
@@ -78,13 +75,13 @@ public sealed class CaptureSession
             {
                 _aggregates[key] = new Agg
                 {
-                    Kind             = access.Kind,
-                    Target           = access.Target,
-                    Operation        = access.Operation,
-                    Detail           = access.Detail,
-                    LastResult       = access.Result,
+                    Kind = access.Kind,
+                    Target = access.Target,
+                    Operation = access.Operation,
+                    Detail = access.Detail,
+                    LastResult = access.Result,
                     LastTimestampUtc = access.TimestampUtc,
-                    Count            = 1,
+                    Count = 1,
                 };
             }
 

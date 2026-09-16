@@ -22,7 +22,7 @@
   <ItemGroup>
     <!-- Same TraceEvent version as ProviderExplorer / the agent so the
          native shims stay binary-compatible if both tools are on a host. -->
-    <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.2.4" GeneratePathProperty="true" />
+    <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.2.5" GeneratePathProperty="true" />
 
     <!-- Note: Microsoft.Win32.Registry and System.Security.AccessControl are
          part of the .NET 10 Windows runtime targeting pack — no explicit
