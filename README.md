@@ -124,10 +124,13 @@ ETDucky.ProcDelta.exe replay  --etl trace.etl --pattern <names> --out app.baseli
 
 `--pattern` takes process names separated by `|`, with `*` and `?`
 wildcards. `--launch` starts the executable after the capture is up and
-tracks its process tree. With `--launch` and no `--duration`, the capture
-ends when the launched tree has exited. `--args` passes arguments to the
-launched executable; the application then inherits the tool's elevation,
-and the output says so.
+tracks its process tree. The value can be a full path, a path relative to
+the current directory, or a bare name such as `notepad`; a bare name is
+found the way the Run dialog finds it, through PATH and the App Paths
+registry keys. With `--launch` and no `--duration`, the capture ends when
+the launched tree has exited. `--args` passes arguments to the launched
+executable; the application then inherits the tool's elevation, and the
+output says so.
 
 The executable is a GUI-subsystem binary, so a console does not wait for it
 on its own. Use `start /wait` from cmd or `Start-Process -Wait` from
