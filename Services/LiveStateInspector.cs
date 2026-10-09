@@ -72,8 +72,8 @@ public static class LiveStateInspector
             // Synthetic / non-filesystem target namespaces first. Probing
             // these as paths or sockets produces misleading "not found"
             // sentences.
-            if (target.StartsWith("service:", StringComparison.OrdinalIgnoreCase))
-                return "(service lifecycle event; verify the service's state and start type in services.msc)";
+            if (ServiceState.IsServiceTarget(target))
+                return ServiceState.Describe(ServiceState.NameOf(target));
             if (target.StartsWith("clr:", StringComparison.OrdinalIgnoreCase))
                 return "(managed-runtime event; no on-disk artifact to probe)";
             if (target.StartsWith("cert:", StringComparison.OrdinalIgnoreCase))

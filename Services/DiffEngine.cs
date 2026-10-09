@@ -56,6 +56,28 @@ public static class DiffEngine
         CaptureSession capture,
         string baselineSource,
         InspectOptions? options = null)
+        => Compare(baseline, capture, baselineSource, options, ServiceState.Query);
+
+    /// <summary>
+    /// <see cref="Compare(Baseline, CaptureSession, string, InspectOptions)"/>
+    /// with the service-state probe supplied by the caller.
+    /// </summary>
+    /// <param name="baseline">The operator-recorded baseline.</param>
+    /// <param name="capture">The live run, or a baseline imported into a session for an offline diff.</param>
+    /// <param name="baselineSource">Where the baseline came from, for the report header.</param>
+    /// <param name="options">Enrichment gates; null means <see cref="InspectOptions.Default"/>.</param>
+    /// <param name="serviceStatus">
+    /// How the engine asks whether a service is running on this host. The
+    /// public overload uses the Service Control Manager; tests inject an
+    /// answer. Only consulted when <see cref="InspectOptions.InspectLive"/>
+    /// is set.
+    /// </param>
+    internal static DiagnosisReport Compare(
+        Baseline baseline,
+        CaptureSession capture,
+        string baselineSource,
+        InspectOptions? options,
+        Func<string, ServiceState.Status> serviceStatus)
     {
         // A baseline is untrusted input. Without explicit operator consent the
         // enrichment pass makes no network connection and prints no registry
@@ -107,10 +129,18 @@ public static class DiffEngine
         // attempted. "Stop" entries are skipped (an unexited process is not
         // a missing dependency), and so is anything the baseline first saw
         // after the point this run reached.
+        //
+        // Service lifecycle entries are transitions. Only a start can be a
+        // dependency, and a start the baseline saw is only missing here when
+        // the service is not running now: a service that was already up
+        // before the action had no start to record.
         var skippedAfterReach = 0;
+        var servicesAlreadyRunning = new List<string>();
         foreach (var e in baseline.Entries)
         {
             if (e.Operation == "Stop") continue;
+            var isService = ServiceState.IsServiceTarget(e.Target);
+            if (isService && !ServiceState.IsStartOperation(e.Operation)) continue;
             if (!ResultSemantics.EverSucceeded(e.Results, e.Operation)) continue;
 
             var key = CaptureSession.ComposeKey(e.Kind, e.Target, e.Operation, e.Detail);
@@ -120,6 +150,17 @@ public static class DiffEngine
             {
                 skippedAfterReach++;
                 continue;
+            }
+
+            if (isService && inspect.InspectLive)
+            {
+                var name = ServiceState.NameOf(e.Target);
+                if (serviceStatus(name) == ServiceState.Status.Running)
+                {
+                    if (!servicesAlreadyRunning.Contains(name, StringComparer.OrdinalIgnoreCase))
+                        servicesAlreadyRunning.Add(name);
+                    continue;
+                }
             }
 
             pending.Add(new PendingCandidate
@@ -207,6 +248,7 @@ public static class DiffEngine
             BaselineEntryCount = baseline.Entries.Count,
             MatchedEntryCount = matched,
             SkippedAfterReach = skippedAfterReach,
+            ServicesAlreadyRunning = servicesAlreadyRunning,
             RootExitObserved = rootExit.HasValue,
             NetworkProbed = inspect.AllowNetwork,
             RegistryValuesShown = inspect.ShowRegistryValues,
@@ -254,6 +296,7 @@ public static class DiffEngine
             BaselineEntryCount = report.BaselineEntryCount,
             MatchedEntryCount = report.MatchedEntryCount,
             SkippedAfterReach = report.SkippedAfterReach,
+            ServicesAlreadyRunning = report.ServicesAlreadyRunning,
             RootExitObserved = false,
             NetworkProbed = false,
             RegistryValuesShown = false,
@@ -323,6 +366,9 @@ public static class DiffEngine
         if (report.SkippedAfterReach > 0)
             sb.AppendLine(CultureInfo.InvariantCulture,
                 $"- {B("Not evaluated:")} {report.SkippedAfterReach:N0} baseline accesses were first seen after the point this run reached ({report.CaptureActivity.TotalSeconds:0.0}s of activity) and are not listed as missing.");
+        if (report.ServicesAlreadyRunning.Count > 0)
+            sb.AppendLine(CultureInfo.InvariantCulture,
+                $"- {B("Services already running:")} {string.Join(", ", report.ServicesAlreadyRunning)}. The baseline recorded a start for each; this host had them running before the action, so no start was needed and they are not listed as missing.");
 
         sb.AppendLine(CultureInfo.InvariantCulture,
             $"- {B("Near-exit marking:")} {(report.RootExitObserved ? "a tracked root process exited during this run; accesses in its final 2 seconds are marked" : "no tracked root process exited during this run; nothing is marked near-exit")}");

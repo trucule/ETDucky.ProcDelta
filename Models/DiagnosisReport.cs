@@ -56,6 +56,13 @@ public sealed class DiagnosisReport
     /// </summary>
     public int SkippedAfterReach { get; init; }
 
+    /// <summary>
+    /// Services the baseline recorded a start for that were already running
+    /// on this host, so this run had no start to make. Not candidates.
+    /// Empty for an offline diff, which does not consult the SCM.
+    /// </summary>
+    public List<string> ServicesAlreadyRunning { get; init; } = new();
+
     /// <summary>True when a root (name-matched) process exited during the live capture, which anchors NearExit.</summary>
     public bool RootExitObserved { get; init; }
 

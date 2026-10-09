@@ -254,6 +254,16 @@ grace, is counted in the report header and left out of the candidate list,
 so a short live run does not report everything the baseline did later as
 missing.
 
+Service lifecycle entries are transitions, and the second pass treats them
+as such. Only a service start can be a missing dependency; a stop or a
+start-type change the baseline happened to see is never one. A start the
+baseline recorded is reported as missing only when the service is not
+running on this host at report time. A service that was already running
+before the action had no start to record, and the report header lists it
+under "Services already running" instead. The state comes from the local
+Service Control Manager and the start type from the registry. An offline
+diff of two baselines does not consult either.
+
 Each candidate is enriched with what the `LiveStateInspector` finds at the
 target on the failing machine at report time: the registry value's type,
 size and hash, a file's presence, size and ACL, or a TCP probe to the host
