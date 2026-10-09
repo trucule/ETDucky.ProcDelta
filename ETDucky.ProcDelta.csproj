@@ -15,9 +15,9 @@
     <!-- The test project lives under tests\ inside this folder. Without this
          the default **/*.cs glob would compile the xunit sources into the app. -->
     <DefaultItemExcludes>$(DefaultItemExcludes);tests\**</DefaultItemExcludes>
-    <Version>2.0.0</Version>
-    <AssemblyVersion>2.0.0.0</AssemblyVersion>
-    <FileVersion>2.0.0.0</FileVersion>
+    <Version>2.1.0</Version>
+    <AssemblyVersion>2.1.0.0</AssemblyVersion>
+    <FileVersion>2.1.0.0</FileVersion>
     <!-- Embedded PDB: the crash log and the fatal-error dialog carry line
          numbers in the field, at the cost of a slightly larger exe. The
          source is public, so the embedded paths reveal nothing. -->
@@ -71,7 +71,7 @@
     <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.2.6" GeneratePathProperty="true" />
 
     <!-- Note: Microsoft.Win32.Registry and System.Security.AccessControl are
-         part of the .NET 10 Windows runtime targeting pack — no explicit
+         part of the .NET 10 Windows runtime targeting pack â€” no explicit
          PackageReferences needed. Adding them produces NU1510 warnings. -->
   </ItemGroup>
 
@@ -89,7 +89,7 @@
        alone in its own public Apache 2.0-licensed repo, with no agent-internal
        types in its surface area. -->
 
-  <!-- TraceEvent native DLL copy — same mechanism as ProviderExplorer. -->
+  <!-- TraceEvent native DLL copy â€” same mechanism as ProviderExplorer. -->
   <Target Name="CopyTraceEventNativeDLLs" AfterTargets="Build">
     <ItemGroup>
       <TraceEventX64DLLs Include="$(PkgMicrosoft_Diagnostics_Tracing_TraceEvent)\build\native\amd64\*.dll" Condition="Exists('$(PkgMicrosoft_Diagnostics_Tracing_TraceEvent)\build\native\amd64')" />
