@@ -1,0 +1,43 @@
+# Dependabot version updates. Security alerts are enabled separately in the
+# repository settings and do not depend on this file.
+#
+# NuGet: both projects restore in locked mode, and Dependabot updates the
+# packages.lock.json files alongside the csproj. TraceEvent is pinned on
+# purpose: the version is kept identical to the ET Ducky agent so the
+# native shims stay binary-compatible when both tools are on one host, and
+# it moves only when the agent moves. Advisories against it still surface
+# as security alerts.
+#
+# GitHub Actions: the workflow pins actions to full commit SHAs and the
+# repository requires that, so these updates bump the SHA and its comment.
+version: 2
+updates:
+  - package-ecosystem: "nuget"
+    directories:
+      - "/"
+      - "/tests/ETDucky.ProcDelta.Tests"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      test-tooling:
+        patterns:
+          - "xunit*"
+          - "Microsoft.NET.Test.Sdk"
+    ignore:
+      - dependency-name: "Microsoft.Diagnostics.Tracing.TraceEvent"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Los_Angeles"
+    commit-message:
+      prefix: "ci"

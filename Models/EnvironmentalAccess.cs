@@ -1,5 +1,3 @@
-using System;
-
 namespace ETDucky.ProcDelta.Models;
 
 /// <summary>
