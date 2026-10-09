@@ -7,9 +7,17 @@
     build and the packages.lock.json files no longer match a clean checkout,
     which is what CI restores in locked mode. This file ends the search here.
 
-    Everything this project needs is in ETDucky.ProcDelta.csproj. Trimming
-    and AOT are stated off because WinForms does not support either and the
-    implicit ILLink package they pull in must not enter the lock file.
+    Everything this project needs is in ETDucky.ProcDelta.csproj.
+
+    The seven properties below are every switch the SDK checks before it
+    adds Microsoft.NET.ILLink.Tasks as an implicit package reference
+    (_RequiresILLinkPack in Microsoft.NET.Publish.targets). That package is
+    versioned with the SDK patch level, so once it is in packages.lock.json
+    a locked restore fails on the next SDK update. Trimming and AOT are off
+    because WinForms supports neither. The single-file analyzer is off
+    because the SDK turns it on whenever PublishSingleFile=true is passed,
+    which would make a plain restore and a single-file publish resolve
+    different package graphs. The code already avoids Assembly.Location.
   -->
   <PropertyGroup>
     <PublishTrimmed>false</PublishTrimmed>
@@ -17,6 +25,8 @@
     <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
     <PublishAot>false</PublishAot>
     <IsAotCompatible>false</IsAotCompatible>
+    <EnableAotAnalyzer>false</EnableAotAnalyzer>
+    <EnableSingleFileAnalyzer>false</EnableSingleFileAnalyzer>
     <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
   </PropertyGroup>
 </Project>

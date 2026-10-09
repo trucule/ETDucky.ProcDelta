@@ -39,14 +39,20 @@ jobs:
       - name: Test
         run: dotnet test tests/ETDucky.ProcDelta.Tests/ETDucky.ProcDelta.Tests.csproj -c Release --no-restore --logger "console;verbosity=normal"
 
+      # Same flags as the operator's release build, locked restore included,
+      # so a publish that would resolve a different package graph than
+      # packages.lock.json fails here instead of on release day.
       - name: Publish (single-file, self-contained) smoke test
         run: |
           dotnet publish ETDucky.ProcDelta.csproj `
             -c Release `
             -r win-x64 `
-            -p:SelfContained=true `
+            --self-contained true `
             -p:PublishSingleFile=true `
-            -o publish
+            -p:EnableCompressionInSingleFile=true `
+            -p:RestoreLockedMode=true `
+            -o publish `
+            --nologo
 
       - name: Confirm the output binary exists and lists what sits beside it
         run: |
