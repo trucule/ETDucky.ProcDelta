@@ -1,0 +1,5 @@
+<Project>
+  <!-- Ends the Directory.Build.targets search here for the same reason as
+       Directory.Build.props: the parent desktop tree must not shape this
+       build. Intentionally empty. -->
+</Project>

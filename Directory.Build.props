@@ -1,0 +1,22 @@
+<Project>
+  <!--
+    This repository is checked out inside the ET Ducky desktop tree on the
+    build machine. MSBuild walks up the directory tree for the first
+    Directory.Build.props it finds, so without this file the desktop tree's
+    properties (trimming, analyzers, package management) leak into this
+    build and the packages.lock.json files no longer match a clean checkout,
+    which is what CI restores in locked mode. This file ends the search here.
+
+    Everything this project needs is in ETDucky.ProcDelta.csproj. Trimming
+    and AOT are stated off because WinForms does not support either and the
+    implicit ILLink package they pull in must not enter the lock file.
+  -->
+  <PropertyGroup>
+    <PublishTrimmed>false</PublishTrimmed>
+    <IsTrimmable>false</IsTrimmable>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <PublishAot>false</PublishAot>
+    <IsAotCompatible>false</IsAotCompatible>
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+</Project>
