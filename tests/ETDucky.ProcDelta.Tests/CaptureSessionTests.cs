@@ -8,6 +8,25 @@ public class CaptureSessionTests
     private static readonly DateTime T0 = new(2026, 10, 9, 12, 0, 0, DateTimeKind.Utc);
 
     [Fact]
+    public void Storage_stack_accesses_are_not_recorded()
+    {
+        // WOF opens file:WofCompressedData on the first uncached read of a
+        // compressed file. That is the storage stack, not the app, and it
+        // comes and goes with cache state, so it never enters a session.
+        var s = new CaptureSession { ProcessPattern = "app.exe", StartedAtUtc = T0 };
+        s.Append(TestData.Access(AccessKind.File, @"<SYSTEM32>\en-US\app.exe.mui:WofCompressedData", "Create", "SUCCESS", T0.AddSeconds(1)));
+        s.Append(TestData.Access(AccessKind.File, @"<SYSTEM32>\en-US\app.exe.mui:wofcompresseddata", "Create", "SUCCESS", T0.AddSeconds(2)));
+        s.Append(TestData.Access(AccessKind.File, @"<SYSTEM32>\en-US\app.exe.mui", "Create", "SUCCESS", T0.AddSeconds(3)));
+        s.Append(TestData.Access(AccessKind.File, @"<USERPROFILE>\Downloads\setup.exe:Zone.Identifier", "Create", "SUCCESS", T0.AddSeconds(4)));
+
+        var targets = s.SnapshotAggregates().Select(a => a.Target).ToList();
+        Assert.Equal(2, targets.Count);
+        Assert.Contains(@"<SYSTEM32>\en-US\app.exe.mui", targets);
+        Assert.Contains(@"<USERPROFILE>\Downloads\setup.exe:Zone.Identifier", targets);
+        Assert.Equal(2, s.TotalEventCount);
+    }
+
+    [Fact]
     public void Aggregates_keep_a_count_per_result_and_first_last_timestamps()
     {
         var s = new CaptureSession { ProcessPattern = "app.exe", StartedAtUtc = T0 };

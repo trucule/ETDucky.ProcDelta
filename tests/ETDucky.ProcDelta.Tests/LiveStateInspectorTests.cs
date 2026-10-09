@@ -97,6 +97,28 @@ public class LiveStateInspectorTests
     }
 
     [Fact]
+    public void Stream_paths_report_the_acl_of_their_file()
+    {
+        // The ACL API rejects file:stream paths; the stream shares the
+        // file's descriptor, so the inspector reads it from the file.
+        var path = Path.Combine(Path.GetTempPath(), $"procdelta-test-{Guid.NewGuid():N}.txt");
+        File.WriteAllText(path, "body");
+        File.WriteAllText(path + ":probe", "stream body");
+        try
+        {
+            var text = LiveStateInspector.Inspect(AccessKind.File, path + ":probe", "", InspectOptions.Default);
+            Assert.StartsWith("File present, 11 bytes", text);
+            Assert.DoesNotContain("read failed", text);
+            Assert.Contains("ACL: ", text);
+            Assert.Contains("=allow:", text);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void Registry_values_are_hidden_unless_shown()
     {
         const string parent = @"Software\ETDucky.ProcDelta.Tests";

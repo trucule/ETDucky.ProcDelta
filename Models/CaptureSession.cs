@@ -99,6 +99,8 @@ public sealed class CaptureSession
     /// <summary>Thread-safe append from any capture pump.</summary>
     public void Append(EnvironmentalAccess access)
     {
+        if (StorageArtifacts.IsStorageArtifact(access.Kind, access.Target)) return;
+
         var key = ComposeKey(access.Kind, access.Target, access.Operation, access.Detail);
         lock (_sync)
         {

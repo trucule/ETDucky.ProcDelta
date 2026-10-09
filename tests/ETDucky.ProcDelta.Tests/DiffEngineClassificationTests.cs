@@ -175,7 +175,7 @@ public class DiffEngineClassificationTests
         var markdown = DiffEngine.RenderMarkdown(report);
         Assert.Contains("(3 values)", markdown);
         Assert.Contains("- `A` QueryValue", markdown);
-        Assert.Contains("Missing dependency — File `<WINDOWS>\\lonely.dll`", markdown);
+        Assert.Contains("Missing dependency: File `<WINDOWS>\\lonely.dll`", markdown);
     }
 
     [Fact]
@@ -203,7 +203,7 @@ public class DiffEngineClassificationTests
 
         var text = DiffEngine.RenderPlainText(DiffEngine.Compare(baseline, live, "t", Offline));
         Assert.Contains("Action: \"opened a file\"", text);
-        Assert.Contains("App version: baseline 1.2.3.4  ·  this run 1.2.3.5  ·  DIFFERS", text);
+        Assert.Contains("App version: baseline 1.2.3.4; this run 1.2.3.5; DIFFERS", text);
         Assert.Contains("Baseline host: GOOD-PC", DiffEngine.RenderPlainText(DiffEngine.Compare(TestData.BaselineWith(), live, "t", Offline)));
     }
 

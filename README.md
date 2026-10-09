@@ -194,6 +194,13 @@ recording user's SID under `\REGISTRY\USER` folds into
 process start records the parent's image name. The parent PID differs on
 every run and is left out of the key.
 
+One kind of file access is dropped rather than normalised. When a
+compressed system file is read for the first time since boot, the Windows
+Overlay Filter opens its `:WofCompressedData` stream on the application's
+thread. That open belongs to the storage stack, and whether it happens
+depends on what is already cached, so it is not recorded and is removed
+from older baselines when they load. The file itself is still recorded.
+
 Network targets are recorded as `ip:port` during capture and rewritten to
 `host:port` when the baseline is built, using the DNS answers seen during
 the same capture. Two machines resolving the same content-delivery name

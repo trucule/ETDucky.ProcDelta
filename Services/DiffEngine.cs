@@ -280,7 +280,7 @@ public static class DiffEngine
         string Em(string s) => plain ? s : $"*{s}*";
 
         var sb = new StringBuilder();
-        var title = $"Diagnosis Report — {report.AppName}";
+        var title = $"Diagnosis Report: {report.AppName}";
         if (plain)
         {
             sb.AppendLine(title);
@@ -296,7 +296,7 @@ public static class DiffEngine
         if (!string.IsNullOrWhiteSpace(report.ActionDescription))
             sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("Action:")} \"{report.ActionDescription}\"");
         sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("Generated:")} {report.GeneratedAtUtc:yyyy-MM-dd HH:mm:ss} UTC");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("Capture host:")} {report.CaptureHost}{BuildSuffix(report.CaptureOsBuild)}  ·  {B("Baseline host:")} {report.BaselineHost}{BuildSuffix(report.BaselineOsBuild)}");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("Capture host:")} {report.CaptureHost}{BuildSuffix(report.CaptureOsBuild)}; {B("Baseline host:")} {report.BaselineHost}{BuildSuffix(report.BaselineOsBuild)}");
 
         var image = !string.IsNullOrEmpty(report.CaptureAppImage) ? report.CaptureAppImage : report.BaselineAppImage;
         if (!string.IsNullOrEmpty(image))
@@ -308,12 +308,12 @@ public static class DiffEngine
             var differs = !string.IsNullOrEmpty(report.BaselineAppVersion)
                        && !string.IsNullOrEmpty(report.CaptureAppVersion)
                        && !string.Equals(report.BaselineAppVersion, report.CaptureAppVersion, StringComparison.OrdinalIgnoreCase);
-            sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("App version:")} baseline {bv}  ·  this run {cv}{(differs ? "  ·  " + B("DIFFERS") : string.Empty)}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("App version:")} baseline {bv}; this run {cv}{(differs ? "; " + B("DIFFERS") : string.Empty)}");
         }
 
         sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("Baseline source:")} {Code(report.BaselineSource)}");
         sb.AppendLine(CultureInfo.InvariantCulture,
-            $"- {B("Durations:")} baseline {report.BaselineDuration.TotalSeconds:0.0}s captured, {report.BaselineActivity.TotalSeconds:0.0}s of tracked activity  ·  this run {report.CaptureDuration.TotalSeconds:0.0}s captured, {report.CaptureActivity.TotalSeconds:0.0}s of tracked activity, {report.CaptureAccessCount} distinct accesses");
+            $"- {B("Durations:")} baseline {report.BaselineDuration.TotalSeconds:0.0}s captured, {report.BaselineActivity.TotalSeconds:0.0}s of tracked activity; this run {report.CaptureDuration.TotalSeconds:0.0}s captured, {report.CaptureActivity.TotalSeconds:0.0}s of tracked activity, {report.CaptureAccessCount} distinct accesses");
 
         var pct = (int)Math.Round(report.Coverage * 100);
         sb.AppendLine(CultureInfo.InvariantCulture,
@@ -450,7 +450,7 @@ public static class DiffEngine
         var unit = first.Kind == AccessKind.Registry && !string.IsNullOrEmpty(first.Detail) ? "values"
                  : first.Kind == AccessKind.Network ? "endpoints"
                  : "entries";
-        var title = $"{idx}. {ClassificationLabel(first.Classification)} — {first.Kind} {Code(Truncate(parent, 80))} ({group.Count} {unit})";
+        var title = $"{idx}. {ClassificationLabel(first.Classification)}: {first.Kind} {Code(Truncate(parent, 80))} ({group.Count} {unit})";
         sb.AppendLine(plain ? title : $"### {title}");
         if (group.Any(c => c.NearExit))
             sb.AppendLine(Em("Includes accesses within 2 seconds of a tracked root process exiting."));
@@ -459,7 +459,7 @@ public static class DiffEngine
         {
             var marker = c.NearExit ? " [near exit]" : string.Empty;
             sb.AppendLine(CultureInfo.InvariantCulture,
-                $"- {Code(Truncate(LeafName(c), 60))} {c.Operation}{marker}  ·  baseline {c.BaselineResult}  ·  this run {c.CaptureResult}  ·  live: {c.LiveState}");
+                $"- {Code(Truncate(LeafName(c), 60))} {c.Operation}{marker}; baseline {c.BaselineResult}; this run {c.CaptureResult}; live: {c.LiveState}");
         }
         sb.AppendLine();
     }
@@ -468,12 +468,12 @@ public static class DiffEngine
         StringBuilder sb, bool plain, int idx, DiagnosisReport.Candidate c,
         Func<string, string> B, Func<string, string> Code, Func<string, string> Em)
     {
-        var candidateTitle = $"{idx}. {ClassificationLabel(c.Classification)} — {c.Kind} {Code(Truncate(c.Target, 80))}";
+        var candidateTitle = $"{idx}. {ClassificationLabel(c.Classification)}: {c.Kind} {Code(Truncate(c.Target, 80))}";
         sb.AppendLine(plain ? candidateTitle : $"### {candidateTitle}");
         if (c.NearExit)
             sb.AppendLine(Em("Fired within 2 seconds of a tracked root process exiting (strong causal signal)."));
         sb.AppendLine();
-        sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("Operation:")} {c.Operation}{(string.IsNullOrEmpty(c.Detail) ? "" : "  ·  detail: " + Code(c.Detail))}");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("Operation:")} {c.Operation}{(string.IsNullOrEmpty(c.Detail) ? "" : "; detail: " + Code(c.Detail))}");
         sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("Baseline observed:")} {Code(c.BaselineResult)}");
         sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("This run observed:")} {Code(c.CaptureResult)}");
         if (c.Images.Count > 0)
@@ -549,7 +549,7 @@ public static class DiffEngine
         };
 
     private static string Truncate(string s, int n)
-        => s.Length <= n ? s : string.Concat(s.AsSpan(0, n), "…");
+        => s.Length <= n ? s : string.Concat(s.AsSpan(0, n), "...");
 
     private sealed class PendingCandidate
     {

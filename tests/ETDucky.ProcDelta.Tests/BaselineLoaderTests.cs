@@ -90,6 +90,37 @@ public class BaselineLoaderTests
     }
 
     [Fact]
+    public void Storage_stack_entries_are_dropped_when_a_baseline_loads()
+    {
+        // A baseline recorded before the capture filtered these must not
+        // report them as missing dependencies against a current run.
+        var recorded = TestData.BaselineWith(
+            TestData.File(@"<SYSTEM32>\en-US\app.exe.mui:WofCompressedData"),
+            TestData.File(@"<SYSTEM32>\en-US\app.exe.mui"),
+            TestData.File(@"<USERPROFILE>\Downloads\setup.exe:Zone.Identifier"));
+
+        var path = Path.Combine(Path.GetTempPath(), $"procdelta-test-{Guid.NewGuid():N}.baseline.json");
+        try
+        {
+            BaselineLoader.Save(recorded, path);
+            var loaded = BaselineLoader.TryLoad(path, out var error);
+            Assert.NotNull(loaded);
+            Assert.Equal(string.Empty, error);
+            Assert.Equal(
+                new[] { @"<SYSTEM32>\en-US\app.exe.mui", @"<USERPROFILE>\Downloads\setup.exe:Zone.Identifier" },
+                loaded!.Entries.Select(e => e.Target));
+
+            var report = DiffEngine.Compare(loaded, new CaptureSession { ProcessPattern = "app.exe" }, "unit-test");
+            Assert.Equal(2, report.BaselineEntryCount);
+            Assert.DoesNotContain(report.Candidates, c => c.Target.EndsWith(":WofCompressedData", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void Unknown_schema_versions_are_refused()
     {
         var b = BaselineLoader.TryParse("""{ "SchemaVersion": 9, "Entries": [] }""", out var error);

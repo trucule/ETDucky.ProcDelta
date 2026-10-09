@@ -70,9 +70,9 @@ public static class BaselineLoader
             switch (baseline.SchemaVersion)
             {
                 case 1:
-                    return Upgrade1To2(baseline);
+                    return DropStorageArtifacts(Upgrade1To2(baseline));
                 case Baseline.CurrentSchemaVersion:
-                    return baseline;
+                    return DropStorageArtifacts(baseline);
                 default:
                     error = $"Unsupported schema version {baseline.SchemaVersion}. This build understands versions 1 and {Baseline.CurrentSchemaVersion}.";
                     return null;
@@ -95,6 +95,17 @@ public static class BaselineLoader
     /// as that result's count; leave offsets unknown (-1) so the diff
     /// engine does not gate on them.
     /// </summary>
+    /// <summary>
+    /// Baselines recorded before the capture filtered storage-stack
+    /// accesses may carry them; a loaded baseline never does, so they can
+    /// not surface as missing dependencies against a current run.
+    /// </summary>
+    private static Baseline DropStorageArtifacts(Baseline baseline)
+    {
+        baseline.Entries.RemoveAll(e => StorageArtifacts.IsStorageArtifact(e.Kind, e.Target));
+        return baseline;
+    }
+
     private static Baseline Upgrade1To2(Baseline v1)
     {
         var entries = new List<Baseline.Entry>(v1.Entries.Count);

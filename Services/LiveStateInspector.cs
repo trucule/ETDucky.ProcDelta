@@ -222,7 +222,9 @@ public static class LiveStateInspector
         if (File.Exists(expandedPath))
         {
             var fi = new FileInfo(expandedPath);
-            var acl = SummariseFileAcl(expandedPath);
+            // A stream shares its file's security descriptor and the ACL
+            // API rejects stream paths, so the ACL is read from the file.
+            var acl = SummariseFileAcl(StorageArtifacts.FileOfStream(expandedPath));
             return $"File present, {fi.Length:N0} bytes, last write {fi.LastWriteTime:yyyy-MM-dd HH:mm:ss}. ACL: {acl}";
         }
         if (Directory.Exists(expandedPath))
@@ -360,5 +362,5 @@ public static class LiveStateInspector
     }
 
     private static string Truncate(string s, int n)
-        => s.Length <= n ? s : string.Concat(s.AsSpan(0, n), "…");
+        => s.Length <= n ? s : string.Concat(s.AsSpan(0, n), "...");
 }
