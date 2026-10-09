@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using ETDucky.ProcDelta.Models;
+using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Diagnostics.Tracing.Parsers.Kernel;
 using Microsoft.Diagnostics.Tracing.Session;
@@ -29,12 +30,20 @@ public sealed class EnvironmentalCapture : IDisposable
     /// </summary>
     public const string SessionNamePrefix = "ETDuckyProcDelta";
 
+    /// <summary>
+    /// Kernel buffer pool. FileIO OperationEnd is system-wide volume (every
+    /// I/O completion on the box reaches user mode before the PID gate), so
+    /// the pool is sized for a busy host rather than TraceEvent's default.
+    /// </summary>
+    public const int KernelBufferSizeMB = 128;
+
     private readonly ProcessTracker _tracker;
     private readonly CaptureSession _session;
-    private readonly RegistryValueCache _registryValues = new();
+    private readonly RegistryValueCache? _registryValues;
     private TraceEventSession? _trace;
     private Task? _processTask;
     private volatile bool _stopping;
+    private int _eventsLostAtStop;
 
     /// <summary>
     /// Raised (from a background thread) when the event pump dies while a
@@ -45,11 +54,20 @@ public sealed class EnvironmentalCapture : IDisposable
     public event Action<string>? Faulted;
 
     /// <summary>
-    /// Events the kernel session reported dropped (buffers full), read at
-    /// stop. Non-zero means the baseline/capture is incomplete and the
-    /// operator should be told.
+    /// Events the kernel session has reported dropped (buffers full). Live
+    /// while the session runs, frozen at stop. Non-zero means the capture is
+    /// incomplete; the status line shows it during the run so the operator
+    /// knows before they finish reproducing, not after.
     /// </summary>
-    public int EventsLost { get; private set; }
+    public int EventsLost
+    {
+        get
+        {
+            var trace = _trace;
+            if (trace is null || _stopping) return _eventsLostAtStop;
+            try { return trace.EventsLost; } catch { return _eventsLostAtStop; }
+        }
+    }
 
     /// <summary>
     /// File-I/O Init events (Create / Delete) carry the path and IRP pointer
@@ -77,12 +95,52 @@ public sealed class EnvironmentalCapture : IDisposable
     /// BaselineRecorder during Build to attach ValueHash + ValueType
     /// to the matching entries.
     /// </summary>
-    public RegistryValueCache RegistryValues => _registryValues;
+    public RegistryValueCache? RegistryValues => _registryValues;
 
     public EnvironmentalCapture(ProcessTracker tracker, CaptureSession session)
+        : this(tracker, session, new RegistryValueCache())
+    {
+    }
+
+    /// <param name="tracker">Decides which PIDs are recorded.</param>
+    /// <param name="session">Receives every kept access.</param>
+    /// <param name="registryValues">
+    /// Null for replay of a recorded trace: this machine's registry has
+    /// nothing to do with the machine the trace came from.
+    /// </param>
+    public EnvironmentalCapture(ProcessTracker tracker, CaptureSession session, RegistryValueCache? registryValues)
     {
         _tracker = tracker;
         _session = session;
+        _registryValues = registryValues;
+        _tracker.RootImageResolved += OnRootImageResolved;
+    }
+
+    private void OnRootImageResolved(string path, string version)
+        => _session.NoteRootImage(PathNormalizer.Normalize(path), version);
+
+    /// <summary>
+    /// Run the same callbacks over a recorded .etl file (xperf, PerfView,
+    /// wpr) instead of a live session. Returns a session whose timestamps
+    /// are the trace's own. The tracker is not seeded from this machine's
+    /// processes; the trace's rundown events seed it.
+    /// </summary>
+    public static CaptureSession Replay(string etlPath, string processPattern, string actionDescription = "")
+    {
+        using var source = new ETWTraceEventSource(etlPath);
+        var session = new CaptureSession
+        {
+            ProcessPattern = processPattern,
+            ActionDescription = actionDescription,
+            StartedAtUtc = source.SessionStartTime.ToUniversalTime(),
+        };
+        var tracker = new ProcessTracker(processPattern, seedFromRunningProcesses: false);
+        using var kernel = new EnvironmentalCapture(tracker, session, registryValues: null);
+        kernel.WireCallbacks(source);
+        AppRuntimeCapture.WireReplay(source, tracker, session);
+        source.Process();
+        session.StoppedAtUtc = session.StartedAtUtc + source.SessionDuration;
+        return session;
     }
 
     /// <summary>
@@ -132,10 +190,15 @@ public sealed class EnvironmentalCapture : IDisposable
         // KernelTraceEventParser.KernelSessionName triggers the
         // private-session mechanism). The 32-char limit on ETW session
         // names plus our prefix leaves room for the GUID fragment.
-        var sessionName = SessionNamePrefix + "_" + Guid.NewGuid().ToString("N").Substring(0, 14);
+        var sessionName = string.Concat(SessionNamePrefix, "_", Guid.NewGuid().ToString("N").AsSpan(0, 14));
 
         _stopping = false;
-        _trace = new TraceEventSession(sessionName) { StopOnDispose = true };
+        _eventsLostAtStop = 0;
+        _trace = new TraceEventSession(sessionName)
+        {
+            StopOnDispose = true,
+            BufferSizeMB = KernelBufferSizeMB,
+        };
 
         _trace.EnableKernelProvider(
             KernelTraceEventParser.Keywords.Process       // tracker spawn/exit
@@ -145,7 +208,7 @@ public sealed class EnvironmentalCapture : IDisposable
           | KernelTraceEventParser.Keywords.NetworkTCPIP  // TCP connect + connect failures
         );
 
-        WireCallbacks(_trace.Source.Kernel);
+        WireCallbacks(_trace.Source);
 
         _processTask = Task.Run(() =>
         {
@@ -169,18 +232,36 @@ public sealed class EnvironmentalCapture : IDisposable
     {
         if (_trace is null) return;
 
+        try { _eventsLostAtStop = _trace.EventsLost; } catch { }
         _stopping = true;
         _session.StoppedAtUtc = DateTime.UtcNow;
 
-        try { EventsLost = _trace.EventsLost; } catch { }
-        try { _trace.Source.StopProcessing(); } catch { }
-
+        // Session first, consumer second: stopping the session flushes its
+        // buffers to the real-time consumer and Process() returns once they
+        // are drained. Stopping the consumer first discards whatever ETW had
+        // not flushed yet, which is the last second before a crash.
+        try { _trace.Stop(noThrow: true); } catch { }
         if (_processTask is not null)
-            await Task.WhenAny(_processTask, Task.Delay(TimeSpan.FromSeconds(2)));
+        {
+            var finished = await Task.WhenAny(_processTask, Task.Delay(TimeSpan.FromSeconds(10)));
+            if (finished != _processTask)
+            {
+                try { _trace.Source.StopProcessing(); } catch { }
+                await Task.WhenAny(_processTask, Task.Delay(TimeSpan.FromSeconds(2)));
+            }
+        }
 
         // Let queued registry read-backs finish before the recorder
         // consumes the cache.
-        try { await _registryValues.DrainAsync(TimeSpan.FromSeconds(5)); } catch { }
+        if (_registryValues is not null)
+        {
+            try { await _registryValues.DrainAsync(TimeSpan.FromSeconds(5)); } catch { }
+        }
+
+        // A root resolved before anyone subscribed (seeded at construction)
+        // is published here instead.
+        if (_tracker.RootImagePath.Length > 0)
+            _session.NoteRootImage(PathNormalizer.Normalize(_tracker.RootImagePath), _tracker.RootFileVersion);
 
         try { _trace.Dispose(); } catch { }
         _trace = null;
@@ -192,11 +273,13 @@ public sealed class EnvironmentalCapture : IDisposable
         _stopping = true;
         try { _trace?.Dispose(); } catch { }
         _trace = null;
-        try { _registryValues.Dispose(); } catch { }
+        try { _registryValues?.Dispose(); } catch { }
+        _tracker.RootImageResolved -= OnRootImageResolved;
     }
 
-    private void WireCallbacks(KernelTraceEventParser kernel)
+    internal void WireCallbacks(TraceEventSource source)
     {
+        var kernel = source.Kernel;
         // Process lifetime — feeds the tracker so it picks up children
         // of already-matched processes. The tracker is the gate; only
         // events whose PID is currently tracked make it into the session.
@@ -205,15 +288,19 @@ public sealed class EnvironmentalCapture : IDisposable
             _tracker.OnProcessStart(data.ProcessID, data.ParentID, data.ImageFileName);
             if (_tracker.IsTracked(data.ProcessID))
             {
+                // Detail used to carry the parent PID, which differs on every
+                // run and turned each process start into a guaranteed false
+                // "missing dependency". The parent's image name is what a
+                // reader wants, and it goes in the non-key ProcessImage slot.
                 _session.Append(new EnvironmentalAccess
                 {
                     Kind = AccessKind.Process,
                     Target = data.ImageFileName ?? string.Empty,
                     Operation = "Start",
-                    Result = "SUCCESS",
-                    Detail = $"parent PID {data.ParentID}",
+                    Result = ResultSemantics.Success,
+                    Detail = string.Empty,
                     ProcessId = data.ProcessID,
-                    ProcessImage = _tracker.ImageNameFor(data.ProcessID),
+                    ProcessImage = _tracker.KnownImageNameFor(data.ParentID),
                     TimestampUtc = data.TimeStamp.ToUniversalTime(),
                 });
                 _session.AddMatchedPid(data.ProcessID);
@@ -233,6 +320,9 @@ public sealed class EnvironmentalCapture : IDisposable
 
         kernel.ProcessStop += data =>
         {
+            if (_tracker.IsNameMatched(data.ProcessID))
+                _session.NoteRootExit(data.TimeStamp.ToUniversalTime());
+
             if (_tracker.IsTracked(data.ProcessID))
             {
                 _session.Append(new EnvironmentalAccess
@@ -295,7 +385,7 @@ public sealed class EnvironmentalCapture : IDisposable
                 Kind = AccessKind.File,
                 Target = PathNormalizer.Normalize(pending.FileName),
                 Operation = pending.Operation,
-                Result = NtStatusName(data.NtStatus),
+                Result = ResultSemantics.ResultFor(data.NtStatus),
                 // CreateOptions deliberately NOT recorded in Detail: Detail
                 // participates in the aggregation/diff key, and apps open
                 // the same file with varying options across runs — keying
@@ -415,14 +505,14 @@ public sealed class EnvironmentalCapture : IDisposable
         var normalizedKey = PathNormalizer.NormalizeRegistry(keyName);
         var valueName = data.ValueName ?? string.Empty;
         var status = RegistryStatusOf(data);
-        var success = status == 0;
+        var success = ResultSemantics.NtSuccess(status);
 
         _session.Append(new EnvironmentalAccess
         {
             Kind = AccessKind.Registry,
             Target = normalizedKey,
             Operation = op,
-            Result = success ? "SUCCESS" : NtStatusName(status),
+            Result = success ? ResultSemantics.Success : ResultSemantics.NtStatusName(status),
             Detail = valueName,
             ProcessId = data.ProcessID,
             ProcessImage = _tracker.ImageNameFor(data.ProcessID),
@@ -433,7 +523,7 @@ public sealed class EnvironmentalCapture : IDisposable
         // Only on success (failed reads have nothing to hash) and only for
         // operations that actually touch a value. Keyed by the normalized
         // path — the same form baseline entries carry.
-        if (success && !string.IsNullOrEmpty(valueName)
+        if (success && _registryValues is not null && !string.IsNullOrEmpty(valueName)
             && (op == "QueryValue" || op == "SetValue"))
         {
             _registryValues.Observe(normalizedKey, valueName);
@@ -462,26 +552,5 @@ public sealed class EnvironmentalCapture : IDisposable
     {
         var s = addr?.ToString() ?? "?";
         return s + ":" + port.ToString(CultureInfo.InvariantCulture);
-    }
-
-    private static string NtStatusName(int status)
-    {
-        var u = unchecked((uint)status);
-        return u switch
-        {
-            0u => "SUCCESS",
-            0xC0000022u => "ACCESS_DENIED",
-            0xC0000034u => "OBJECT_NAME_NOT_FOUND",
-            0xC000003Au => "OBJECT_PATH_NOT_FOUND",
-            0xC0000043u => "SHARING_VIOLATION",
-            0xC000000Du => "INVALID_PARAMETER",
-            0xC000007Bu => "INVALID_IMAGE_FORMAT",
-            0xC0000018u => "CONFLICTING_ADDRESSES",
-            0xC0000035u => "OBJECT_NAME_COLLISION",
-            0xC0000056u => "DELETE_PENDING",
-            0xC0000061u => "PRIVILEGE_NOT_HELD",
-            0xC0000017u => "NO_MEMORY",
-            _ => $"0x{u:X8}",
-        };
     }
 }

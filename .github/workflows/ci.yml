@@ -1,4 +1,9 @@
-# Continuous integration build for every push and pull request.
+# Continuous integration for every push and pull request.
+#
+# Build, test, and a single-file publish smoke test. This workflow does not
+# sign and does not release; signed releases are produced outside this
+# repository. Actions are pinned to full commit SHAs and packages are
+# restored in locked mode against the committed packages.lock.json files.
 name: CI
 
 on:
@@ -7,39 +12,50 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   build:
-    name: Build (Release, win-x64)
+    name: Build, test, publish (Release, win-x64)
     runs-on: windows-2022
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up .NET 10
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: '10.0.x'
 
-      - name: Restore
-        run: dotnet restore ETDucky.ProcDelta.csproj
+      - name: Restore (locked to packages.lock.json)
+        run: |
+          dotnet restore ETDucky.ProcDelta.csproj --locked-mode
+          dotnet restore tests/ETDucky.ProcDelta.Tests/ETDucky.ProcDelta.Tests.csproj --locked-mode
 
       - name: Build (Release)
         run: dotnet build ETDucky.ProcDelta.csproj -c Release --no-restore
 
-      - name: Publish (single-file, self-contained) — smoke test
+      - name: Test
+        run: dotnet test tests/ETDucky.ProcDelta.Tests/ETDucky.ProcDelta.Tests.csproj -c Release --no-restore --logger "console;verbosity=normal"
+
+      - name: Publish (single-file, self-contained) smoke test
         run: |
           dotnet publish ETDucky.ProcDelta.csproj `
             -c Release `
             -r win-x64 `
             -p:SelfContained=true `
             -p:PublishSingleFile=true `
-            -p:IncludeNativeLibrariesForSelfExtract=true `
             -o publish
 
-      - name: Confirm output binary exists
+      - name: Confirm the output binary exists and lists what sits beside it
         run: |
           if (!(Test-Path publish\ETDucky.ProcDelta.exe)) {
             Write-Error "Expected publish\ETDucky.ProcDelta.exe was not produced."
             exit 1
           }
           Get-Item publish\ETDucky.ProcDelta.exe | Select-Object Length, LastWriteTime
+          # With IncludeNativeLibrariesForSelfExtract=false, native runtime
+          # files land here instead of inside the bundle. The portable
+          # release ships the exe alone; this listing shows what is left out.
+          Get-ChildItem publish | Select-Object Name, Length

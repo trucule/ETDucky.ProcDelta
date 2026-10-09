@@ -29,6 +29,10 @@ desktop.ini
 *.snk
 secrets.env
 
+# Release tooling lives outside this repository (signing stays private)
+release-procdelta.ps1
+*.ps1
+
 # Local test captures and baselines
 *.etl
 *.etlx

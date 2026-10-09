@@ -12,12 +12,53 @@
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <AssemblyName>ETDucky.ProcDelta</AssemblyName>
     <RootNamespace>ETDucky.ProcDelta</RootNamespace>
+    <!-- The test project lives under tests\ inside this folder. Without this
+         the default **/*.cs glob would compile the xunit sources into the app. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);tests\**</DefaultItemExcludes>
     <Version>2.0.0</Version>
     <AssemblyVersion>2.0.0.0</AssemblyVersion>
     <FileVersion>2.0.0.0</FileVersion>
-    <DebugType>none</DebugType>
-    <DebugSymbols>false</DebugSymbols>
+    <!-- Embedded PDB: the crash log and the fatal-error dialog carry line
+         numbers in the field, at the cost of a slightly larger exe. The
+         source is public, so the embedded paths reveal nothing. -->
+    <DebugType>embedded</DebugType>
+    <!-- Keep the build clean while the project is small enough to do so.
+         NuGet audit advisories (NU1901-NU1904) stay warnings: a transitive
+         advisory should not break every build from source; Dependabot alerts
+         on the repository carry them instead. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+    <!-- Pin the analyzer level so CI (which checks out only this repository)
+         enforces the same rules as a local build inside the desktop tree,
+         whose Directory.Build.props raises the analysis level. -->
+    <AnalysisMode>Recommended</AnalysisMode>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+
+    <!-- Single-file publish: managed assemblies load from the bundle in
+         memory and nothing is written to %TEMP%. Native libraries are NOT
+         bundled for self-extraction: the tool runs elevated, and the
+         default extraction directory (%TEMP%\.net\<app>\<bundle-id>) is
+         writable by non-elevated processes of the same user, so a planted
+         DLL there would load into an admin process. The runtime natives
+         this leaves beside the exe in the publish folder (DiaSymReader,
+         DAC, createdump) are debugging aids and are not needed to run;
+         the portable release ships the exe alone. The TraceEvent native
+         shims copied by the target below are build-output files, not
+         publish items, and were never inside the bundle. -->
+    <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
+    <IncludeAllContentForSelfExtract>false</IncludeAllContentForSelfExtract>
+
+    <!-- packages.lock.json pins every resolved package and its hash. CI
+         restores in locked mode, so a dependency that resolves differently
+         from the committed lock file fails the build instead of shipping.
+         Update the lock file by running a normal `dotnet restore` here and
+         committing the result. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ETDucky.ProcDelta.Tests" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- Same TraceEvent version as ProviderExplorer / the agent so the

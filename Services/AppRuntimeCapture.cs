@@ -1,6 +1,8 @@
-using System.Globalization;
+using System.Collections.Concurrent;
 using ETDucky.ProcDelta.Models;
 using Microsoft.Diagnostics.Tracing;
+using Microsoft.Diagnostics.Tracing.Parsers;
+using Microsoft.Diagnostics.Tracing.Parsers.Clr;
 using Microsoft.Diagnostics.Tracing.Session;
 
 namespace ETDucky.ProcDelta.Services;
@@ -41,18 +43,29 @@ public sealed class AppRuntimeCapture : IDisposable
     private static readonly Guid ProviderWinInet = new("43d1a55c-76d6-4f7e-995c-64c711e5cafe");
     private static readonly Guid ProviderCapi2 = new("5bbca4a8-b209-48dc-a8c7-b23d3e5216fb");
     private static readonly Guid ProviderClrRuntime = new("e13c0d23-ccbc-4e12-931b-d9cc2eee27e4");
+    private static readonly Guid ProviderDnsClient = new("1c95126e-7eea-49a9-a3fe-a378b03ddb4d");
 
-    // .NET CLR keywords — values from clretwall.man in the .NET source.
-    // We enable Exception (0x8000) and Loader (0x8) for managed-exception
-    // surface and assembly-load-failure surface respectively.
-    private const ulong ClrKeywordException = 0x8000;
-    private const ulong ClrKeywordLoader = 0x8;
+    // .NET CLR keywords. Exception and Loader come from the typed parser's
+    // enum; AssemblyLoader (0x4, .NET 5+ load/resolution events with a
+    // Success flag) is spelled out because older enum builds lack it.
+    private const ulong ClrKeywordAssemblyLoader = 0x4;
+
+    /// <summary>User-mode buffer pool. These providers are low volume next to the kernel session.</summary>
+    public const int AppBufferSizeMB = 32;
 
     private readonly ProcessTracker _tracker;
     private readonly CaptureSession _session;
     private TraceEventSession? _trace;
     private Task? _processTask;
     private volatile bool _stopping;
+
+    /// <summary>
+    /// Events delivered per provider, counted before the PID gate. The
+    /// status line shows these so an operator (and the author) can see
+    /// whether each user-mode provider is actually decoding on this host,
+    /// instead of silently capturing nothing.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, long> _delivered = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Raised (from a background thread) when the event pump dies while a
@@ -72,23 +85,24 @@ public sealed class AppRuntimeCapture : IDisposable
     {
         if (_trace is not null) throw new InvalidOperationException("App-runtime capture already started.");
 
-        var sessionName = EnvironmentalCapture.SessionNamePrefix + "App_" + Guid.NewGuid().ToString("N").Substring(0, 11);
+        var sessionName = string.Concat(EnvironmentalCapture.SessionNamePrefix, "App_", Guid.NewGuid().ToString("N").AsSpan(0, 11));
 
         _stopping = false;
-        _trace = new TraceEventSession(sessionName) { StopOnDispose = true };
+        _trace = new TraceEventSession(sessionName)
+        {
+            StopOnDispose = true,
+            BufferSizeMB = AppBufferSizeMB,
+        };
 
         _trace.EnableProvider(ProviderServices, TraceEventLevel.Informational);
         _trace.EnableProvider(ProviderWinInet, TraceEventLevel.Informational);
         _trace.EnableProvider(ProviderCapi2, TraceEventLevel.Warning);
-        _trace.EnableProvider(ProviderClrRuntime,
+        _trace.EnableProvider(ProviderDnsClient, TraceEventLevel.Informational);
+        _trace.EnableProvider(ClrTraceEventParser.ProviderGuid,
             TraceEventLevel.Informational,
-            ClrKeywordException | ClrKeywordLoader);
+            (ulong)(ClrTraceEventParser.Keywords.Exception | ClrTraceEventParser.Keywords.Loader) | ClrKeywordAssemblyLoader);
 
-        // Generic Dynamic.All handler — these four providers don't have
-        // first-party TraceEvent parser classes in the version we ship,
-        // so we read each event's metadata via the universal dynamic
-        // surface and decide what to record by ProviderGuid + EventName.
-        _trace.Source.Dynamic.All += HandleEvent;
+        WireCallbacks(_trace.Source);
 
         _processTask = Task.Run(() =>
         {
@@ -125,27 +139,109 @@ public sealed class AppRuntimeCapture : IDisposable
         _trace = null;
     }
 
+    /// <summary>
+    /// Attach the handlers to any source: the live session, or an .etl file
+    /// during replay. The OS manifest providers (Services, WinINet, CAPI2,
+    /// DNS-Client) arrive through the dynamic parser; the CLR arrives
+    /// through TraceEvent's typed CLR parser, which is the one that knows
+    /// the runtime's event layout for both .NET Framework and .NET Core.
+    /// </summary>
+    internal void WireCallbacks(TraceEventSource source)
+    {
+        source.Dynamic.All += HandleEvent;
+        var clr = source.Clr;
+        clr.ExceptionStart += OnClrException;
+        clr.All += OnClrGeneric;
+    }
+
+    /// <summary>Replay entry point used by <see cref="EnvironmentalCapture.Replay"/>.</summary>
+    internal static void WireReplay(TraceEventSource source, ProcessTracker tracker, CaptureSession session)
+        => new AppRuntimeCapture(tracker, session).WireCallbacks(source);
+
+    /// <summary>"services 3, wininet 120, capi2 0, dns 15, clr 2" for the status line.</summary>
+    public string DeliveredSummary
+    {
+        get
+        {
+            string N(string k) => _delivered.TryGetValue(k, out var n) ? n.ToString(System.Globalization.CultureInfo.InvariantCulture) : "0";
+            return $"services {N("services")}, wininet {N("wininet")}, capi2 {N("capi2")}, dns {N("dns")}, clr {N("clr")}";
+        }
+    }
+
+    private void Count(string provider) => _delivered.AddOrUpdate(provider, 1, (_, n) => n + 1);
+
     private void HandleEvent(TraceEvent data)
     {
         // Classify which provider it came from. Cheap GUID compare beats
         // string compare on ProviderName.
         var pg = data.ProviderGuid;
 
+        // The CLR is handled by the typed parser; a desktop-framework host
+        // that also registered the manifest with the OS would otherwise
+        // deliver the same event twice.
+        if (pg == ProviderClrRuntime) return;
+
         // Services events come from services.exe (the SCM), never from a
-        // tracked PID — see class remarks. All other providers emit from
-        // the app's own process and go through the tracked-PID gate.
+        // tracked PID, see class remarks. DNS answers are cached from every
+        // process (they only map addresses to names) and recorded as
+        // accesses for tracked ones. All other providers emit from the
+        // app's own process and go through the tracked-PID gate.
         if (pg == ProviderServices)
         {
+            Count("services");
             RecordServiceEvent(data);
             return;
         }
+        if (pg == ProviderDnsClient)
+        {
+            Count("dns");
+            RecordDnsEvent(data);
+            return;
+        }
+
+        if (pg == ProviderWinInet) Count("wininet");
+        else if (pg == ProviderCapi2) Count("capi2");
 
         if (!_tracker.IsTracked(data.ProcessID)) return;
 
         if (pg == ProviderWinInet) RecordWinInetEvent(data);
         else if (pg == ProviderCapi2) RecordCapi2Event(data);
-        else if (pg == ProviderClrRuntime) RecordClrEvent(data);
-        // else: provider we enabled but don't currently render — ignore.
+        // else: provider we enabled but don't currently render; ignore.
+    }
+
+    /// <summary>
+    /// Microsoft-Windows-DNS-Client event 3008 "query completed":
+    /// QueryName, QueryType, QueryOptions, QueryStatus, QueryResults. The
+    /// results feed the session's DNS cache so TCP targets can be keyed by
+    /// hostname; the completion itself is recorded as a Resolve access for
+    /// tracked processes, so a lookup that worked on the baseline host and
+    /// fails here is a High regression on the name, not just a missing
+    /// connect on an address.
+    /// </summary>
+    private void RecordDnsEvent(TraceEvent data)
+    {
+        if ((int)data.ID != 3008) return;
+
+        var name = TryPayloadString(data, "QueryName");
+        if (string.IsNullOrWhiteSpace(name)) return;
+
+        var result = ResultSemantics.NormalizeOutcome(TryPayloadString(data, "QueryStatus") ?? "0");
+        if (result == ResultSemantics.Success)
+            _session.Dns.Record(name, TryPayloadString(data, "QueryResults") ?? string.Empty);
+
+        if (!_tracker.IsTracked(data.ProcessID)) return;
+
+        _session.Append(new EnvironmentalAccess
+        {
+            Kind = AccessKind.Network,
+            Target = "dns:" + name.Trim().TrimEnd('.').ToLowerInvariant(),
+            Operation = "Resolve",
+            Result = result,
+            Detail = data.ProviderName,
+            ProcessId = data.ProcessID,
+            ProcessImage = _tracker.ImageNameFor(data.ProcessID),
+            TimestampUtc = data.TimeStamp.ToUniversalTime(),
+        });
     }
 
     private void RecordServiceEvent(TraceEvent data)
@@ -177,10 +273,14 @@ public sealed class AppRuntimeCapture : IDisposable
         // WinINet is chatty. Keep failures and request lifecycle events.
         if (!IsWinInetInterestingEvent(name)) return;
 
-        var url = TryPayloadString(data, "Url")
-               ?? TryPayloadString(data, "ServerName")
-               ?? TryPayloadString(data, "Hostname")
-               ?? "(unknown)";
+        // Scrubbed to scheme://host[:port]/path before it goes anywhere:
+        // the query string is where SAS tokens, API keys and session ids
+        // travel, and it would otherwise be written into the baseline.
+        var url = TargetScrubber.ScrubUrl(
+            TryPayloadString(data, "Url")
+            ?? TryPayloadString(data, "ServerName")
+            ?? TryPayloadString(data, "Hostname")
+            ?? "(unknown)");
         var result = ExtractResult(data);
         _session.Append(new EnvironmentalAccess
         {
@@ -217,33 +317,59 @@ public sealed class AppRuntimeCapture : IDisposable
         });
     }
 
-    private void RecordClrEvent(TraceEvent data)
+    /// <summary>
+    /// A managed exception was thrown in a tracked process. The message is
+    /// deliberately not recorded: messages routinely carry connection
+    /// strings, file paths and account names. The type is what the diff
+    /// needs.
+    /// </summary>
+    private void OnClrException(ExceptionTraceData data)
+    {
+        Count("clr");
+        if (!_tracker.IsTracked(data.ProcessID)) return;
+        _session.Append(new EnvironmentalAccess
+        {
+            Kind = AccessKind.Process,
+            Target = $"clr:{data.ExceptionType}",
+            Operation = "Exception",
+            Result = "(exception thrown)",
+            Detail = ".NET CLR Runtime",
+            ProcessId = data.ProcessID,
+            ProcessImage = _tracker.ImageNameFor(data.ProcessID),
+            TimestampUtc = data.TimeStamp.ToUniversalTime(),
+        });
+    }
+
+    /// <summary>
+    /// .NET 5+ AssemblyLoader events. Only a load that FAILED is recorded:
+    /// every successful load is noise, and the failure (missing or wrong-
+    /// version DLL) is the signal. Read through the generic payload surface
+    /// so the handler does not depend on the typed class names for these
+    /// newer events.
+    /// </summary>
+    private void OnClrGeneric(TraceEvent data)
     {
         var name = data.EventName ?? string.Empty;
-        // Only the diagnostically-interesting CLR events. ExceptionThrown
-        // surfaces what threw before death. AssemblyLoad/Failure surface
-        // missing or wrong-version DLLs.
-        if (name == "Exception/Start"
-         || name == "Exception/Thrown_V1"
-         || name == "ExceptionThrown_V1"
-         || name == "Loader/AssemblyLoad"
-         || name == "AssemblyLoad")
+        if (!name.StartsWith("AssemblyLoader/", StringComparison.Ordinal)) return;
+        Count("clr");
+        if (!name.EndsWith("/Stop", StringComparison.Ordinal)) return;
+        if (!_tracker.IsTracked(data.ProcessID)) return;
+
+        var success = TryPayloadString(data, "Success");
+        if (success is null || success.Equals("True", StringComparison.OrdinalIgnoreCase)) return;
+
+        var asm = TryPayloadString(data, "AssemblyName") ?? "(unknown)";
+        _session.Append(new EnvironmentalAccess
         {
-            var exType = TryPayloadString(data, "ExceptionType");
-            var asm = TryPayloadString(data, "FullyQualifiedAssemblyName") ?? TryPayloadString(data, "AssemblyName");
-            var target = exType ?? asm ?? "(unknown)";
-            _session.Append(new EnvironmentalAccess
-            {
-                Kind = AccessKind.Process,
-                Target = $"clr:{target}",
-                Operation = name,
-                Result = TryPayloadString(data, "ExceptionMessage") ?? "(event)",
-                Detail = ".NET CLR Runtime",
-                ProcessId = data.ProcessID,
-                ProcessImage = _tracker.ImageNameFor(data.ProcessID),
-                TimestampUtc = data.TimeStamp.ToUniversalTime(),
-            });
-        }
+            Kind = AccessKind.Process,
+            Target = $"clr:{asm}",
+            Operation = "AssemblyLoad",
+            Result = "LOAD_FAILED",
+            Detail = ".NET CLR Runtime",
+            ProcessId = data.ProcessID,
+            ProcessImage = _tracker.ImageNameFor(data.ProcessID),
+            TimestampUtc = data.TimeStamp.ToUniversalTime(),
+        });
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────
@@ -272,43 +398,11 @@ public sealed class AppRuntimeCapture : IDisposable
         {
             var v = TryPayloadString(data, field);
             if (v is null) continue;
-            return NormalizeOutcome(v);
+            return ResultSemantics.NormalizeOutcome(v);
         }
-        // No outcome field — call it SUCCESS for diff purposes (the event
+        // No outcome field: call it SUCCESS for diff purposes (the event
         // fired, that's a positive observation in itself).
-        return "SUCCESS";
-    }
-
-    /// <summary>
-    /// Canonicalise an outcome value so the same code compares equal
-    /// between baseline and live even when one OS build's manifest renders
-    /// it decimal and another hex ("2147954407" vs "0x80072EE7").
-    /// Zero in any spelling → "SUCCESS"; other numerics → "0xXXXXXXXX";
-    /// non-numeric strings pass through unchanged.
-    /// </summary>
-    private static string NormalizeOutcome(string v)
-    {
-        var s = v.Trim();
-        if (s.Length == 0) return "SUCCESS";
-        if (s.Equals("SUCCESS", StringComparison.OrdinalIgnoreCase)) return "SUCCESS";
-
-        ulong parsed;
-        if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!ulong.TryParse(s.Substring(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out parsed))
-                return v;
-        }
-        else if (long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var dec))
-        {
-            parsed = unchecked((ulong)dec);
-        }
-        else
-        {
-            return v;
-        }
-
-        if (parsed == 0) return "SUCCESS";
-        return $"0x{unchecked((uint)parsed):X8}";
+        return ResultSemantics.Success;
     }
 
     private static bool IsServiceLifecycleEvent(string name)
