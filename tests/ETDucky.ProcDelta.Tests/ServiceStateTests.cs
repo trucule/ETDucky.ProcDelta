@@ -38,6 +38,7 @@ public class ServiceStateTests
     {
         Assert.Equal(ServiceState.Status.Running, ServiceState.Query("EventLog"));
         Assert.Equal("Automatic", ServiceState.StartTypeOf("EventLog"));
+        Assert.Equal(new ServiceState.Snapshot(ServiceState.Status.Running, "Automatic"), ServiceState.Take("EventLog"));
         Assert.Equal("Service EventLog is running (start type Automatic).", ServiceState.Describe("EventLog"));
     }
 
@@ -46,7 +47,30 @@ public class ServiceStateTests
     {
         Assert.Equal(ServiceState.Status.NotInstalled, ServiceState.Query("no-such-service-9f3a"));
         Assert.Equal("unknown", ServiceState.StartTypeOf("no-such-service-9f3a"));
+        Assert.Equal(new ServiceState.Snapshot(ServiceState.Status.NotInstalled, "unknown"), ServiceState.Take("no-such-service-9f3a"));
         Assert.Equal("Service no-such-service-9f3a is not installed on this host.", ServiceState.Describe("no-such-service-9f3a"));
         Assert.Equal(ServiceState.Status.Unavailable, ServiceState.Query(""));
+    }
+
+    [Theory]
+    [InlineData(ServiceState.Status.Stopped, "Disabled", true, true)]
+    [InlineData(ServiceState.Status.NotInstalled, "unknown", false, true)]
+    [InlineData(ServiceState.Status.Stopped, "Manual", false, false)]
+    [InlineData(ServiceState.Status.Stopped, "Automatic", false, false)]
+    [InlineData(ServiceState.Status.Running, "Disabled", false, false)]
+    [InlineData(ServiceState.Status.Unavailable, "unknown", false, false)]
+    public void A_snapshot_knows_whether_anything_can_start_the_service(ServiceState.Status status, string startType, bool disabled, bool cannotStart)
+    {
+        var snapshot = new ServiceState.Snapshot(status, startType);
+        Assert.Equal(disabled, snapshot.IsDisabled);
+        Assert.Equal(cannotStart, snapshot.CannotStart);
+    }
+
+    [Fact]
+    public void A_disabled_service_gets_the_extra_sentence()
+    {
+        var text = ServiceState.Describe("Example", new ServiceState.Snapshot(ServiceState.Status.Stopped, "Disabled"));
+        Assert.Equal("Service Example is stopped (start type Disabled). A disabled service cannot be started by the application.", text);
+        Assert.Equal("Service Example is paused (start type Manual).", ServiceState.Describe("Example", new ServiceState.Snapshot(ServiceState.Status.Paused, "Manual")));
     }
 }

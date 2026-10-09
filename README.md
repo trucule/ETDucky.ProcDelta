@@ -136,7 +136,8 @@ The executable is a GUI-subsystem binary, so a console does not wait for it
 on its own. Use `start /wait` from cmd or `Start-Process -Wait` from
 PowerShell. Output goes to the parent console when there is one.
 
-Exit codes: 0 ok, 1 usage, 2 failed, 3 findings (with `--fail-on-findings`).
+Exit codes: 0 ok, 1 usage, 2 failed, 3 findings above informational (with
+`--fail-on-findings`).
 `record` and `compare` need Administrator. `diff` and `replay` do not.
 
 ## How it works
@@ -254,15 +255,20 @@ grace, is counted in the report header and left out of the candidate list,
 so a short live run does not report everything the baseline did later as
 missing.
 
-Service lifecycle entries are transitions, and the second pass treats them
-as such. Only a service start can be a missing dependency; a stop or a
-start-type change the baseline happened to see is never one. A start the
-baseline recorded is reported as missing only when the service is not
-running on this host at report time. A service that was already running
-before the action had no start to record, and the report header lists it
-under "Services already running" instead. The state comes from the local
-Service Control Manager and the start type from the registry. An offline
-diff of two baselines does not consult either.
+Service lifecycle entries are transitions, recorded system-wide during the
+capture window, and the second pass treats them as such. Only a service
+start can be a missing dependency; a stop or a start-type change the
+baseline happened to see is never one. What a missing start means depends
+on the service's state on this host at report time. Running: the service
+was already up before the action, there was no start to record, and the
+report header lists it under "Services already running". Disabled or not
+installed: nothing can start it, so it is a Medium candidate. Stopped with
+an Automatic or Manual start type: the application could start it on
+demand and did not, and the start the baseline saw may have come from
+something unrelated, so it is listed as informational. The state comes
+from the local Service Control Manager and the start type from the
+registry. An offline diff of two baselines consults neither and keeps
+every missing start at Medium.
 
 Each candidate is enriched with what the `LiveStateInspector` finds at the
 target on the failing machine at report time: the registry value's type,
@@ -291,7 +297,8 @@ Candidates are grouped by severity and numbered. Each one shows the
 operation, the per-result counts on both sides, the processes that made
 the access, when the baseline first saw it, and the live state. Three or
 more candidates under one registry key, folder or host are rendered as one
-group with one line per member.
+group with one line per member. An informational section holds context
+that is not a finding on its own; `--fail-on-findings` does not count it.
 
 ## Network and privacy
 

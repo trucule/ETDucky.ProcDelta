@@ -156,7 +156,7 @@ public static class Cli
         Console.WriteLine("  --duration  seconds to capture; required unless --launch is given");
         Console.WriteLine("  --timeout   upper bound in seconds when waiting for a launched tree to exit (default 600)");
         Console.WriteLine();
-        Console.WriteLine("Exit codes: 0 ok, 1 usage, 2 failed, 3 findings (compare/diff with --fail-on-findings).");
+        Console.WriteLine("Exit codes: 0 ok, 1 usage, 2 failed, 3 findings above informational (compare/diff with --fail-on-findings).");
         Console.WriteLine("Administrator is required for record and compare. Nothing leaves the machine unless --probe-network is given.");
     }
 
@@ -278,10 +278,14 @@ public static class Cli
         }
 
         var n = report.Candidates.Count;
-        Console.WriteLine($"{n} candidate(s). Coverage {Math.Round(report.Coverage * 100)}%. Report written to {reportPath}");
+        var findings = report.FindingCount;
+        var informational = n - findings;
+        Console.WriteLine(informational > 0
+            ? $"{n} candidate(s), {informational} informational. Coverage {Math.Round(report.Coverage * 100)}%. Report written to {reportPath}"
+            : $"{n} candidate(s). Coverage {Math.Round(report.Coverage * 100)}%. Report written to {reportPath}");
         if (report.BaselineEntryCount > 0 && report.Coverage < DiagnosisReport.LowCoverageThreshold)
             Console.WriteLine("Low coverage: the runs may not be comparable.");
-        return n > 0 && o.Has("fail-on-findings") ? ExitFindings : ExitOk;
+        return findings > 0 && o.Has("fail-on-findings") ? ExitFindings : ExitOk;
     }
 
     private sealed class CaptureOutcome

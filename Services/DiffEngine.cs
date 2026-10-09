@@ -56,7 +56,7 @@ public static class DiffEngine
         CaptureSession capture,
         string baselineSource,
         InspectOptions? options = null)
-        => Compare(baseline, capture, baselineSource, options, ServiceState.Query);
+        => Compare(baseline, capture, baselineSource, options, ServiceState.Take);
 
     /// <summary>
     /// <see cref="Compare(Baseline, CaptureSession, string, InspectOptions)"/>
@@ -66,18 +66,18 @@ public static class DiffEngine
     /// <param name="capture">The live run, or a baseline imported into a session for an offline diff.</param>
     /// <param name="baselineSource">Where the baseline came from, for the report header.</param>
     /// <param name="options">Enrichment gates; null means <see cref="InspectOptions.Default"/>.</param>
-    /// <param name="serviceStatus">
-    /// How the engine asks whether a service is running on this host. The
-    /// public overload uses the Service Control Manager; tests inject an
-    /// answer. Only consulted when <see cref="InspectOptions.InspectLive"/>
-    /// is set.
+    /// <param name="serviceState">
+    /// How the engine reads a service's state and start type on this host.
+    /// The public overload uses the Service Control Manager and the
+    /// registry; tests inject an answer. Only consulted when
+    /// <see cref="InspectOptions.InspectLive"/> is set.
     /// </param>
     internal static DiagnosisReport Compare(
         Baseline baseline,
         CaptureSession capture,
         string baselineSource,
         InspectOptions? options,
-        Func<string, ServiceState.Status> serviceStatus)
+        Func<string, ServiceState.Snapshot> serviceState)
     {
         // A baseline is untrusted input. Without explicit operator consent the
         // enrichment pass makes no network connection and prints no registry
@@ -130,10 +130,14 @@ public static class DiffEngine
         // a missing dependency), and so is anything the baseline first saw
         // after the point this run reached.
         //
-        // Service lifecycle entries are transitions. Only a start can be a
-        // dependency, and a start the baseline saw is only missing here when
-        // the service is not running now: a service that was already up
-        // before the action had no start to record.
+        // Service lifecycle entries are transitions, recorded system-wide
+        // during the window. Only a start can be a dependency. A start the
+        // baseline saw is not missing when the service is running now (it
+        // was already up, so there was no start to record). When it is not
+        // running, the finding is a candidate only if nothing could start
+        // it (disabled or not installed); a service that can be started on
+        // demand may simply have been started by something unrelated during
+        // the baseline window, so that case is informational.
         var skippedAfterReach = 0;
         var servicesAlreadyRunning = new List<string>();
         foreach (var e in baseline.Entries)
@@ -152,20 +156,24 @@ public static class DiffEngine
                 continue;
             }
 
+            DiagnosisReport.Severity? severityOverride = null;
             if (isService && inspect.InspectLive)
             {
                 var name = ServiceState.NameOf(e.Target);
-                if (serviceStatus(name) == ServiceState.Status.Running)
+                var snapshot = serviceState(name);
+                if (snapshot.Status == ServiceState.Status.Running)
                 {
                     if (!servicesAlreadyRunning.Contains(name, StringComparer.OrdinalIgnoreCase))
                         servicesAlreadyRunning.Add(name);
                     continue;
                 }
+                if (!snapshot.CannotStart) severityOverride = DiagnosisReport.Severity.Info;
             }
 
             pending.Add(new PendingCandidate
             {
                 Classification = DiagnosisReport.Classification.MissingDependency,
+                SeverityOverride = severityOverride,
                 Kind = e.Kind,
                 Target = e.Target,
                 Operation = e.Operation,
@@ -202,7 +210,7 @@ public static class DiffEngine
             var p = pending[i];
             candidates.Add(new DiagnosisReport.Candidate
             {
-                Severity = SeverityFor(p.Classification),
+                Severity = p.SeverityOverride ?? SeverityFor(p.Classification),
                 Classification = p.Classification,
                 Kind = p.Kind,
                 Target = p.Target,
@@ -390,7 +398,9 @@ public static class DiffEngine
 
         foreach (var severity in bySeverity)
         {
-            var heading = $"{severity.Key} severity ({severity.Count()})";
+            var heading = severity.Key == DiagnosisReport.Severity.Info
+                ? $"Informational ({severity.Count()})"
+                : $"{severity.Key} severity ({severity.Count()})";
             if (plain)
             {
                 sb.AppendLine(heading);
@@ -518,6 +528,8 @@ public static class DiffEngine
         sb.AppendLine(plain ? candidateTitle : $"### {candidateTitle}");
         if (c.NearExit)
             sb.AppendLine(Em("Fired within 2 seconds of a tracked root process exiting (strong causal signal)."));
+        if (c.Severity == DiagnosisReport.Severity.Info && ServiceState.IsServiceTarget(c.Target))
+            sb.AppendLine(Em("Service starts are recorded system-wide during the capture window, so this start may have been unrelated to the application. The service can be started on demand on this host."));
         sb.AppendLine();
         sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("Operation:")} {c.Operation}{(string.IsNullOrEmpty(c.Detail) ? "" : "; detail: " + Code(c.Detail))}");
         sb.AppendLine(CultureInfo.InvariantCulture, $"- {B("Baseline observed:")} {Code(c.BaselineResult)}");
@@ -609,5 +621,6 @@ public static class DiffEngine
         public IReadOnlyList<string> Images { get; init; } = Array.Empty<string>();
         public bool NearExit { get; init; }
         public long BaselineFirstSeenMs { get; init; } = -1;
+        public DiagnosisReport.Severity? SeverityOverride { get; init; }
     }
 }

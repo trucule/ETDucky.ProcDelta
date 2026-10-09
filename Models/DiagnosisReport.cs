@@ -78,6 +78,9 @@ public sealed class DiagnosisReport
     /// <summary>Ordered worst-first.</summary>
     public List<Candidate> Candidates { get; init; } = new();
 
+    /// <summary>Candidates above informational severity. This is what --fail-on-findings counts.</summary>
+    public int FindingCount => Candidates.Count(c => c.Severity != Severity.Info);
+
     public sealed class Candidate
     {
         public Severity Severity { get; init; }

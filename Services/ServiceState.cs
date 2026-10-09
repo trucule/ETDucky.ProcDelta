@@ -28,6 +28,16 @@ public static class ServiceState
         Stopping,
     }
 
+    /// <summary>State and start type of a service at one moment.</summary>
+    public sealed record Snapshot(Status Status, string StartType)
+    {
+        /// <summary>The service is stopped and its start type is Disabled: nothing can start it until an administrator changes that.</summary>
+        public bool IsDisabled => Status == Status.Stopped && string.Equals(StartType, "Disabled", StringComparison.Ordinal);
+
+        /// <summary>Not installed, or installed but disabled: an application that needs it cannot get it.</summary>
+        public bool CannotStart => Status == Status.NotInstalled || IsDisabled;
+    }
+
     public static bool IsServiceTarget(string target)
         => !string.IsNullOrEmpty(target) && target.StartsWith(TargetPrefix, StringComparison.OrdinalIgnoreCase);
 
@@ -109,14 +119,25 @@ public static class ServiceState
         }
     }
 
-    /// <summary>One sentence for the report's live-state line.</summary>
-    public static string Describe(string name)
+    /// <summary>State and start type of the named service on this host, read now.</summary>
+    public static Snapshot Take(string name)
     {
         var status = Query(name);
+        var startType = status is Status.NotInstalled or Status.Unavailable ? "unknown" : StartTypeOf(name);
+        return new Snapshot(status, startType);
+    }
+
+    /// <summary>One sentence for the report's live-state line.</summary>
+    public static string Describe(string name) => Describe(name, Take(name));
+
+    /// <summary>One sentence for the report's live-state line, from a snapshot already taken.</summary>
+    public static string Describe(string name, Snapshot snapshot)
+    {
+        var status = snapshot.Status;
         if (status == Status.NotInstalled) return $"Service {name} is not installed on this host.";
         if (status == Status.Unavailable) return $"Service {name}: state could not be read.";
 
-        var startType = StartTypeOf(name);
+        var startType = snapshot.StartType;
         var state = status switch
         {
             Status.Running => "running",

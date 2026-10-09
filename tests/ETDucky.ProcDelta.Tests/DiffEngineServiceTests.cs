@@ -6,8 +6,9 @@ namespace ETDucky.ProcDelta.Tests;
 
 /// <summary>
 /// A service start in the baseline is a transition the baseline happened
-/// to see. It is a missing dependency only when the service is not running
-/// on this host now; a service that was already up had no start to make.
+/// to see, recorded system-wide. What its absence means depends on the
+/// service's state on this host now: already running is satisfied,
+/// disabled or missing is a candidate, startable on demand is context.
 /// </summary>
 public class DiffEngineServiceTests
 {
@@ -19,31 +20,57 @@ public class DiffEngineServiceTests
 
     private static CaptureSession EmptyRun() => new() { ProcessPattern = "app.exe" };
 
+    private static ServiceState.Snapshot Running => new(ServiceState.Status.Running, "Manual");
+
     [Fact]
     public void A_start_the_baseline_saw_is_satisfied_when_the_service_is_running_now()
     {
-        var report = DiffEngine.Compare(BaselineWithClipSvcStart(), EmptyRun(), "unit-test", InspectOptions.Default, _ => ServiceState.Status.Running);
+        var report = DiffEngine.Compare(BaselineWithClipSvcStart(), EmptyRun(), "unit-test", InspectOptions.Default, _ => Running);
 
         Assert.Empty(report.Candidates);
+        Assert.Equal(0, report.FindingCount);
         Assert.Equal(new[] { "ClipSVC" }, report.ServicesAlreadyRunning);
         Assert.Contains("Services already running:** ClipSVC.", DiffEngine.RenderMarkdown(report));
         Assert.Contains("Services already running: ClipSVC.", DiffEngine.RenderPlainText(report));
     }
 
     [Theory]
-    [InlineData(ServiceState.Status.Stopped)]
-    [InlineData(ServiceState.Status.NotInstalled)]
-    [InlineData(ServiceState.Status.Unavailable)]
-    public void A_start_the_baseline_saw_is_missing_when_the_service_is_not_running(ServiceState.Status now)
+    [InlineData(ServiceState.Status.Stopped, "Disabled")]
+    [InlineData(ServiceState.Status.NotInstalled, "unknown")]
+    public void A_start_nothing_on_this_host_can_make_is_a_medium_candidate(ServiceState.Status status, string startType)
     {
-        var report = DiffEngine.Compare(BaselineWithClipSvcStart(), EmptyRun(), "unit-test", InspectOptions.Default, _ => now);
+        var report = DiffEngine.Compare(BaselineWithClipSvcStart(), EmptyRun(), "unit-test", InspectOptions.Default,
+            _ => new ServiceState.Snapshot(status, startType));
 
         var c = Assert.Single(report.Candidates);
         Assert.Equal(DiagnosisReport.Classification.MissingDependency, c.Classification);
+        Assert.Equal(DiagnosisReport.Severity.Medium, c.Severity);
         Assert.Equal("service:ClipSVC", c.Target);
         Assert.Equal("ServiceStart", c.Operation);
         Assert.StartsWith("Service ClipSVC", c.LiveState, StringComparison.Ordinal);
+        Assert.Equal(1, report.FindingCount);
         Assert.Empty(report.ServicesAlreadyRunning);
+    }
+
+    [Theory]
+    [InlineData(ServiceState.Status.Stopped, "Manual")]
+    [InlineData(ServiceState.Status.Stopped, "Automatic")]
+    [InlineData(ServiceState.Status.Paused, "Automatic")]
+    [InlineData(ServiceState.Status.Unavailable, "unknown")]
+    public void A_start_the_host_could_still_make_is_informational(ServiceState.Status status, string startType)
+    {
+        var report = DiffEngine.Compare(BaselineWithClipSvcStart(), EmptyRun(), "unit-test", InspectOptions.Default,
+            _ => new ServiceState.Snapshot(status, startType));
+
+        var c = Assert.Single(report.Candidates);
+        Assert.Equal(DiagnosisReport.Classification.MissingDependency, c.Classification);
+        Assert.Equal(DiagnosisReport.Severity.Info, c.Severity);
+        Assert.Equal(0, report.FindingCount);
+
+        var markdown = DiffEngine.RenderMarkdown(report);
+        Assert.Contains("## Informational (1)", markdown);
+        Assert.Contains("may have been unrelated to the application", markdown);
+        Assert.DoesNotContain("Medium severity", markdown);
     }
 
     [Fact]
@@ -56,6 +83,7 @@ public class DiffEngineServiceTests
 
         var c = Assert.Single(report.Candidates);
         Assert.Equal("service:ClipSVC", c.Target);
+        Assert.Equal(DiagnosisReport.Severity.Medium, c.Severity);
         Assert.Equal(DiffEngine.OfflineLiveState, c.LiveState);
         Assert.Empty(report.ServicesAlreadyRunning);
         Assert.DoesNotContain("Services already running", DiffEngine.RenderPlainText(report));
@@ -68,7 +96,8 @@ public class DiffEngineServiceTests
             TestData.Entry(AccessKind.Process, "service:ClipSVC", "ServiceStop", Provider, 9000),
             TestData.Entry(AccessKind.Process, "service:wuauserv", "ServiceStartTypeChanged", Provider, 1000));
 
-        var report = DiffEngine.Compare(baseline, EmptyRun(), "unit-test", InspectOptions.Default, _ => ServiceState.Status.Stopped);
+        var report = DiffEngine.Compare(baseline, EmptyRun(), "unit-test", InspectOptions.Default,
+            _ => new ServiceState.Snapshot(ServiceState.Status.Stopped, "Disabled"));
 
         Assert.Empty(report.Candidates);
         Assert.Empty(report.ServicesAlreadyRunning);
@@ -82,10 +111,12 @@ public class DiffEngineServiceTests
         live.Append(TestData.Access(AccessKind.Process, "service:ClipSVC", "ServiceStart", "0x80070422", t0.AddSeconds(2), detail: Provider, image: "services.exe"));
         live.StoppedAtUtc = t0.AddSeconds(10);
 
-        var report = DiffEngine.Compare(BaselineWithClipSvcStart(), live, "unit-test", InspectOptions.Default, _ => ServiceState.Status.Running);
+        var report = DiffEngine.Compare(BaselineWithClipSvcStart(), live, "unit-test", InspectOptions.Default, _ => Running);
 
         var c = Assert.Single(report.Candidates);
         Assert.Equal(DiagnosisReport.Classification.Regression, c.Classification);
+        Assert.Equal(DiagnosisReport.Severity.High, c.Severity);
         Assert.Equal("service:ClipSVC", c.Target);
+        Assert.Equal(1, report.FindingCount);
     }
 }
