@@ -1,0 +1,22 @@
+# Root of this repository's editor and analyzer configuration. root = true
+# stops the search here, so the desktop tree this repository sits in on the
+# build machine does not shape this build. Keep CI and a local build identical.
+root = true
+
+[*]
+charset = utf-8
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{yml,yaml,json}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.cs]
+# Unnecessary usings are a build warning (and therefore an error under
+# TreatWarningsAsErrors). Needs GenerateDocumentationFile=true in the csproj.
+dotnet_diagnostic.IDE0005.severity = warning

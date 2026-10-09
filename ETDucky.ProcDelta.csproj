@@ -33,6 +33,11 @@
          whose Directory.Build.props raises the analysis level. -->
     <AnalysisMode>Recommended</AnalysisMode>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <!-- Required for IDE0005 (unnecessary usings) to run in the build. The
+         generated XML file is a build artifact and is not shipped. CS1591
+         (missing XML comment on a public member) is not enforced. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
 
     <!-- Single-file publish: managed assemblies load from the bundle in
          memory and nothing is written to %TEMP%. Native libraries are NOT

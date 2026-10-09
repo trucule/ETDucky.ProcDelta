@@ -14,14 +14,18 @@
     <RootNamespace>ETDucky.ProcDelta.Tests</RootNamespace>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <!-- Same analysis level and warnings-as-errors as the app, so test code
-         is held to the same bar. CA1861 (cache constant arrays in fields)
-         is off here: inline arrays in assertions and parse inputs are test
-         data, and hoisting them into fields hides what each test checks. -->
+         is held to the same bar. Two rules are off here. CA1707 (no
+         underscores in member names): test methods are named as sentences
+         with underscores so the test explorer and CI output read as a
+         specification. CA1861 (cache constant arrays in fields): inline
+         arrays in assertions and parse inputs are test data, and hoisting
+         them into fields hides what each test checks. -->
     <AnalysisMode>Recommended</AnalysisMode>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
-    <NoWarn>$(NoWarn);CA1861</NoWarn>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CA1707;CA1861;CS1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
