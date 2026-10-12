@@ -65,9 +65,27 @@ Findings the tool is built to surface:
 ## Download
 
 Signed Windows executables are published on the [Releases](../../releases)
-page as `ETDucky.ProcDelta.exe`, a portable single-file build. Download it,
-open its Properties, tick Unblock to clear the mark of the web, and run it.
+page in two forms.
+
+`ETDucky.ProcDelta.exe` is a portable single-file build. Download it, open
+its Properties, tick Unblock to clear the mark of the web, and run it.
 Nothing is installed. Delete the file to remove it.
+
+`ETDuckyProcDeltaSetup-<version>.exe` installs the same executable to
+`C:\Program Files\ETDucky\ProcDelta` with a Start Menu shortcut and a
+Programs and Features entry, for deployment tools that expect an installer.
+Silent install and uninstall:
+
+```
+ETDuckyProcDeltaSetup-<version>.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
+"C:\Program Files\ETDucky\ProcDelta\uninstall\unins000.exe" /VERYSILENT /NORESTART
+```
+
+Both return exit code 0 on success. A detection rule can read
+`DisplayVersion` (a string such as `2.1.0`) under
+`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{570850C8-FA20-4658-BF69-2FFA9445C6F5}_is1`
+in the 64-bit registry view. `SHA256SUMS.txt` on the release lists the hash
+of each file.
 
 The tool requires Administrator because kernel ETW sessions require it. The
 manifest requests elevation, so Windows shows one UAC prompt at launch. An
@@ -139,6 +157,47 @@ PowerShell. Output goes to the parent console when there is one.
 Exit codes: 0 ok, 1 usage, 2 failed, 3 findings above informational (with
 `--fail-on-findings`).
 `record` and `compare` need Administrator. `diff` and `replay` do not.
+
+### Remote and unattended use
+
+The capture is a kernel ETW session and sees every process on the machine,
+whichever logon session it belongs to. The tool can therefore run from a
+PowerShell remoting session, a management agent or a scheduled task while a
+user works at the desktop. Name the process with `--pattern` and set a
+window with `--duration`; the user starts the application and performs the
+action inside that window. Do not use `--launch` from a remote or service
+session: it starts the application in the caller's session, where nobody
+is.
+
+From a remote session, `Start-Process -Wait` is required because a bare
+call returns at once, and `-RedirectStandardOutput` is how the progress
+lines are captured, since there is no console for them to attach to:
+
+```powershell
+$exe = "$env:ProgramFiles\ETDucky\ProcDelta\ETDucky.ProcDelta.exe"
+$out = 'C:\ProgramData\ETDucky\ProcDelta'
+New-Item -ItemType Directory -Force $out | Out-Null
+$p = Start-Process $exe -Wait -PassThru -RedirectStandardOutput "$out\record.log" -ArgumentList @(
+    'record',
+    '--out',      "$out\app.baseline.json",
+    '--pattern',  'Acrobat.exe|AcroCEF.exe',
+    '--duration', '120',
+    '--app',      'Acrobat',
+    '--action',   '"open a PDF and print it"')
+$p.ExitCode
+```
+
+`compare` takes the same shape with `--baseline`, `--report` and `--json`.
+Quote arguments that contain spaces; `Start-Process` in Windows PowerShell
+5.1 does not add quotes. The session needs a full administrator token: a
+domain administrator over WinRM has one, and a local administrator account
+does not unless `LocalAccountTokenFilterPolicy` is set. Without it, `record`
+and `compare` exit with code 2.
+
+Nothing from the operator's side enters the baseline. The recording user's
+name is left out unless `--include-user` is given, and the host recorded is
+the target's. Nothing leaves the machine; the baseline and the report are
+collected with the remoting session's or the agent's own file transfer.
 
 ## How it works
 
